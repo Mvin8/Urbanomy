@@ -1,0 +1,35 @@
+my\_package.my\_module
+======================
+
+.. automodule:: my_package.my_module
+
+   
+   
+   
+
+   
+   
+   .. rubric:: Functions
+
+   .. autosummary::
+   
+      my_function
+   
+   
+
+   
+   
+   .. rubric:: Classes
+
+   .. autosummary::
+   
+      MyClass
+   
+   
+
+   
+   
+   
+
+
+

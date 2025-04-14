@@ -1,5 +1,5 @@
 import pytest
-from my_package.my_module import my_function
+from methods.my_module import my_function
 
 @pytest.fixture
 def a():

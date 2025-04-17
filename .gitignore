@@ -26,6 +26,7 @@ db.sqlite3
 
 #Data 
 examples/data
+examples/parsed_parts
 
 # Flask stuff
 instance/

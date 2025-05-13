@@ -25,11 +25,11 @@ The library can be installed with ``pip``:
 How to use
 ----------
 
-Use the library by importing classes from ``my_package``:
+Use the library by importing classes from ``urbanomy``:
 
 ::
 
-   from my_package.my_module_1 import MyClass
+   from urbanomy.my_module_1 import MyClass
 
 For more detailed use case see our `examples <#examples>`__.
 
@@ -60,7 +60,7 @@ The latest version of the library is available in the ``main`` branch.
 
 The repository includes the following directories and modules:
 
--  `my_package <./my_package>`__
+-  `urbanomy <./urbanomy>`__
    directory with the library code:
 
    -  ...
@@ -93,7 +93,7 @@ Contacts
 
 You can contact me:
 
--  `Vasilii Starikov <https://t.me/vasilstar>`__ - assistant
+-  `Maksim Natykin <https://t.me/vasilstar>`__ - assistant
 
 Also, you are welcomed to the `issues <./issues>`__ section!
 

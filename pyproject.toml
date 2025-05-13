@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "urbanomy" # название вашего проекта
 version = "0.0.1"
 authors = [
-    { name = "Vasilii Starikov", email = "vasilstar97@gmail.com" },
+    { name = "Maksim Natykin", email = "mvin@itmo.ru" },
 ] # не забудьте поменять на свое имя :)
 description = "IDU research package boilerplate"
 readme = "README.rst"

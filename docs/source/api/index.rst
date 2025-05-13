@@ -7,4 +7,4 @@ The modules of MyPackage are listed below:
    :toctree: _autosummary
    :recursive:
 
-   my_package
+   urbanomy

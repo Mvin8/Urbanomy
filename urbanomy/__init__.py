@@ -8,8 +8,8 @@ such as versioning, author information, and license details.
 
 import importlib
 
-__version__ = importlib.metadata.version("my_package") # TODO поменять название в соответствии с pyproject.toml
-__author__ = "Vasilii Starikov"
-__email__ = "vasilstar97@gmail.com"
+__version__ = importlib.metadata.version("urbanomy") # TODO поменять название в соответствии с pyproject.toml
+__author__ = "Maksim Natykin"
+__email__ = "mvin@itmo.ru"
 __credits__ = []
 __license__ = "BSD-3"

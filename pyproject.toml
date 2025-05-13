@@ -3,7 +3,7 @@ requires = ["setuptools>=64.0"]
 build-backend = "setuptools.build_meta"
 
 [project] # метаданные проекта
-name = "my_package" # название вашего проекта
+name = "urbanomy" # название вашего проекта
 version = "0.0.1"
 authors = [
     { name = "Vasilii Starikov", email = "vasilstar97@gmail.com" },
@@ -25,7 +25,7 @@ classifiers = [ # метаданные для описания проекта п
 ]
 
 [tool.setuptools.packages.find] # что включать в сборку при установке
-include = ["my_package*"]
+include = ["urbanomy*"]
 
 
 [project.optional-dependencies]

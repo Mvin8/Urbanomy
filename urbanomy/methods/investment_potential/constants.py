@@ -14,14 +14,6 @@ LAND_USE_TO_POTENTIAL_COLUMN: Final[dict[str, str]] = {
     "transport":    "Потенциал развития застройки транспортной зоны",
 }
 
-DEFAULT_ECON_METRIC: str       = "EI"
-DEFAULT_DISCOUNT_RATE: float   = 0.12
-DEFAULT_AREA_COL: str          = "Площадь территории"
-DEFAULT_IP_TYPE: str           = "ip_type"
-DEFAULT_IP_VALUE: str          = "ip_value"
-
-
-
 LAND_USE_WEIGHTS = {
     'residential_individual': {
         'Население': 1.3,
@@ -107,3 +99,11 @@ INVESTMENT_WEIGHTS = {
     "agriculture":            (0.6, 0.4),
     "transport":              (0.35,0.65),
 }
+
+
+
+DEFAULT_ECON_METRIC: str       = "EI"
+DEFAULT_DISCOUNT_RATE: float   = 0.12
+DEFAULT_AREA_COL: str          = "Площадь территории"
+DEFAULT_IP_TYPE: str           = "ip_type"
+DEFAULT_IP_VALUE: str          = "ip_value"

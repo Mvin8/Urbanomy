@@ -6,7 +6,7 @@ Urbanomy: Investment Attractiveness Analysis for Land-Use
    :alt: The Institute of Design and Urban Studies
 
 .. figure:: https://psv4.userapi.com/s/v1/d/LQL8fQ5o0kL1VRqeuM_P9hNUklLHJ6C8muuas7YDuhKolUDx7ZO9Fw1IszJZQNHfnNqXTnzTAz5E8R2WNythf40XWGq5RO7GIVbBiSOn2CLhZravVGB-bw/ChatGPT_Image_22_maya_2025_g__18_15_35.png
-   :alt: Новый логотип Urbanomy
+   :alt: Urbanomy
 
 .. logo-end
 

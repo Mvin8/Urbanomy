@@ -1,113 +1,118 @@
-Python package boilerplate (IDU) 
-================================
+Urbanomy: Investment Attractiveness Analysis for Land-Use
+=========================================================
 
 .. logo-start
 
 .. figure:: https://sun9-46.userapi.com/impf/aUFBStH0x_6jN9UhgwrKN1WN4hZ9Y2HMMrXT2w/NuzVobaGlZ0.jpg?size=1590x400&quality=95&crop=0,0,1878,472&sign=9d33baa41a86de35d951d4bbd8011994&type=cover_group
-   :alt: The Institute of Design and Urban Studies
+   :alt: Institute of Design and Urban Studies
 
 .. logo-end
 
-|Documentation Status| |PythonVersion| |Black|
+.. image:: https://github.com/vasilstar97/urbanomy/actions/workflows/ci.yml/badge.svg?branch=main
+   :target: https://github.com/vasilstar97/urbanomy/actions
 
-.. readme-start 
+.. image:: https://readthedocs.org/projects/urbanomy/badge/?version=latest
+   :target: https://urbanomy.readthedocs.io/
+
+.. image:: https://img.shields.io/badge/python-3.8%2C%203.9%2C%203.10-blue
+   :target: https://pypi.org/project/urbanomy/
+
+.. image:: https://img.shields.io/badge/code_style-black-000000
+   :target: https://github.com/psf/black
+
+Overview
+--------
+Urbanomy is a Python library for computing **spatial** and **economic** investment-attractiveness metrics
+for land-use polygons. It integrates GeoPandas workflows with financial models (NPV, IRR, ROI, payback
+period, economic index) and produces both tabular summaries and geospatial visualizations.
+
+Features
+--------
+- Flexible per-land-use benchmark definitions and weighting schemes  
+- Automated cash-flow generation and aggregation  
+- Calculation of NPV, IRR, ROI, payback period, economic index (EI)  
+- Spatial–economic synthesis into a single INV score  
+- Utilities for normalization, quantization, and data cleaning  
+- Plotting routines for attribute weights and map grids  
 
 Installation
 ------------
+Install directly from GitHub:
 
-The library can be installed with ``pip``:
+.. code-block:: bash
 
-::
+   pip install git+https://github.com/vasilstar97/urbanomy.git@main
 
-   pip install git+https://github.com/vasilstar97/python-package-boilerplate@main
-
-
-How to use
+Quickstart
 ----------
+Load your GeoDataFrame, run the analyzer, and inspect results:
 
-Use the library by importing classes from ``urbanomy``:
+.. code-block:: python
 
-::
+   import geopandas as gpd
+   from urbanomy.investment_attractiveness import InvestmentAttractivenessAnalyzer
 
-   from urbanomy.my_module_1 import MyClass
+   # 1. Read your land-use GeoJSON
+   gdf = gpd.read_file("examples/data/landuse_sample.geojson")
 
-For more detailed use case see our `examples <#examples>`__.
+   # 2. Define benchmarks (see docs for schema)
+   benchmarks = {
+       "residential_individual": { "density": 1.0, "cost_build": 1000, ... },
+       "industrial":            { "density": 0.5, "cost_build": 800,  ... },
+       # ...
+   }
+
+   # 3. Compute metrics
+   analyzer = InvestmentAttractivenessAnalyzer(benchmarks=benchmarks)
+   enriched_gdf, summary = analyzer.calculate_investment_metrics(gdf)
+
+   # 4. View summary
+   print(summary)
 
 Data
 ----
-
-All the required data is stored in `examples
-data folder <./examples/data>`__.
+Sample data and templates are provided in the `examples/data/` directory.
+Feel free to replace with your own GeoJSON, Shapefile or PostGIS source.
 
 Examples
 --------
+Complete usage examples are available as Jupyter notebooks:
 
-Next examples will help one to get used to the library:
-
-1. Main `example <./examples/my_example.ipynb>`__ of the library.
-2. ...
+1. `examples/landuse_analysis.ipynb`  
+2. `examples/voronoi_zones.ipynb`  
 
 Documentation
 -------------
+Full documentation, including API reference and tutorials, is hosted on Read the Docs:
 
-Detailed information and description of the library is available in
-`documentation <https://vasilstar97.github.io/python-package-boilerplate/>`__.
+https://urbanomy.readthedocs.io/
 
-Project Structure
------------------
+Contributing
+------------
+Contributions are very welcome! Please:
 
-The latest version of the library is available in the ``main`` branch.
+1. Fork the repository  
+2. Create a feature branch (`git checkout -b feature/your-feature`)  
+3. Commit your changes with clear messages  
+4. Push to your fork and open a Pull Request  
 
-The repository includes the following directories and modules:
-
--  `urbanomy <./urbanomy>`__
-   directory with the library code:
-
-   -  ...
-   -  ...
-
--  `tests <./tests>`__
-   ``pytest`` testing
--  `examples <./examples>`__
-   examples of how the library works
--  `docs <./docs>`__
-   documentation sources
-
-Developing
-----------
-
-...
+Please follow Black formatting and add tests for new functionality.
 
 License
 -------
-
-The project has `BSD-3-Clause license <./LICENSE>`__
+This project is licensed under the **BSD-3-Clause** License. See `LICENSE` for details.
 
 Acknowledgments
 ---------------
+- Developed at the Institute of Design and Urban Studies  
+- Inspired by best practices in geospatial finance and urban analytics  
 
-...
-
-Contacts
---------
-
-You can contact me:
-
--  `Maksim Natykin <https://t.me/vasilstar>`__ - assistant
-
-Also, you are welcomed to the `issues <./issues>`__ section!
+Contact
+-------
+Maxim Natykin  
+Telegram: https://t.me/Mvin98  
+GitHub Issues: https://github.com/vasilstar97/urbanomy/issues  
 
 Publications
 ------------
-
--  `My publication name from scholar or something <https://scholar.google.com/>`__
--  ...
-
-.. |Documentation Status| image:: https://github.com/vasilstar97/python-package-boilerplate/actions/workflows/documentation.yml/badge.svg?branch=main
-   :target: https://vasilstar97.github.io/python-package-boilerplate/
-.. |PythonVersion| image:: https://img.shields.io/badge/python-3.10-blue
-   :target: https://pypi.org/project/geopandas/
-.. |Black| image:: https://img.shields.io/badge/code%20style-black-000000.svg
-   :target: https://github.com/psf/black
-
-.. readme-end
+- See also related work at https://scholar.google.com/

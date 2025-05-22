@@ -1,4 +1,3 @@
-# investment_potential/land_use.py
 from __future__ import annotations
 import math
 from typing import Dict, Any
@@ -7,144 +6,133 @@ import geopandas as gpd
 import matplotlib.pyplot as plt
 import pandas as pd
 from pandera import check_types
+import json
 
 from ...utils.validation import LandUseDF
 from .constants import LAND_USE_TO_POTENTIAL_COLUMN, LAND_USE_WEIGHTS
 
 
-
 class LandUseScoreAnalyzer:
-    """Анализатор инвестиционной привлекательности по видам землепользования."""
+    """
+    Compute spatial investment attractiveness scores for land-use types.
 
-    def __init__(self,
-                 weights: Dict[str, Dict[str, float]] | None = None,
-                 weights_path: str | None = None):
+    Takes a GeoDataFrame with raw land-use attributes and outputs
+    both wide- and long-format GeoDataFrames of investment scores.
+    """
+
+    def __init__(
+        self,
+        weights: dict[str, dict[str, float]] | None = None,
+        weights_path: str | None = None
+    ):
+        """
+        Initialize the analyzer.
+
+        Parameters
+        ----------
+        weights : dict[str, dict[str, float]] or None
+            Custom per-land-use weighting factors for attributes.
+            If None, defaults to LAND_USE_WEIGHTS.
+        weights_path : str or None
+            Path to JSON file containing weights. Used if `weights` is None.
+
+        Raises
+        ------
+        FileNotFoundError
+            If `weights` is None and `weights_path` is provided but file is not found.
+        ValueError
+            If JSON at `weights_path` is invalid or not a dict of dicts.
+        """
         if weights is not None:
             self.weights = weights
         elif weights_path:
-            import json
             with open(weights_path, "r", encoding="utf-8") as f:
                 self.weights = json.load(f)
         else:
             self.weights = LAND_USE_WEIGHTS
-        self.land_use_to_potential = LAND_USE_TO_POTENTIAL_COLUMN
+        self.land_use_to_potential: dict[str, str] = LAND_USE_TO_POTENTIAL_COLUMN
 
-    # ------------------------------------------------------------------ #
-    # основные методы
-    # ------------------------------------------------------------------ #
-    def compute_scores(self, polygon_gdf: LandUseDF) -> LandUseDF:
+    def _compute_wide(self, polygon_gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+        """
+        Compute wide-format investment scores (no 'ИП_' prefix).
+
+        For each land-use key, computes a weighted average of numeric attributes
+        scaled by the corresponding potential column.
+
+        Parameters
+        ----------
+        polygon_gdf : geopandas.GeoDataFrame
+            Input GeoDataFrame containing:
+            - numeric attribute columns
+            - potential columns as specified in LAND_USE_TO_POTENTIAL_COLUMN
+            - geometry column
+
+        Returns
+        -------
+        geopandas.GeoDataFrame
+            Copy of input with additional score columns named by land-use keys,
+            each containing a float score or None where not applicable.
+        """
+        gdf = polygon_gdf.copy()
         pot_cols = list(self.land_use_to_potential.values())
         attrs = [
-            c for c in polygon_gdf.select_dtypes("number").columns
-            if c not in pot_cols and ((polygon_gdf[c].between(-5, 5) & (polygon_gdf[c] != 0)).any())
+            col for col in gdf.select_dtypes("number").columns
+            if col not in pot_cols and ((gdf[col].between(-5, 5) & (gdf[col] != 0)).any())
         ]
 
         for lu, pot_col in self.land_use_to_potential.items():
-            score_col = f"ИП_{lu}"
+            score_col = lu
 
-            def calc(row: pd.Series):
+            def calc(row: pd.Series) -> float | None:
                 pot = row.get(pot_col)
                 if pd.isna(pot):
                     return None
                 vals = [
-                    row[a] * self.weights.get(lu, {}).get(a, self.weights[lu]["default"])
-                    for a in attrs if pd.notna(row[a])
+                    row[attr] * self.weights.get(lu, {}).get(attr, self.weights[lu]["default"])
+                    for attr in attrs
+                    if pd.notna(row[attr])
                 ]
-                return round(sum(vals) / len(vals) * (pot / 5), 1) if vals else None
+                if not vals:
+                    return None
+                return round(sum(vals) / len(vals) * (pot / 5), 1)
 
-            polygon_gdf[score_col] = polygon_gdf.apply(calc, axis=1)
+            gdf[score_col] = gdf.apply(calc, axis=1)
 
-        return polygon_gdf
+        return gdf
 
-    def plot_attribute_weights(self, land_use_key: str, ax=None):
+    def compute_scores_long(self, polygon_gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
         """
-        Визуализация весов атрибутов для заданного типа землепользования.
+        Convert wide-format scores to long format.
 
-        Args:
-            land_use_key (str): Ключ типа землепользования из словаря weights.
-            ax (matplotlib.axes.Axes, optional): Ось для рисования. Если None, создается новая.
+        Takes the output of `_compute_wide` and melts score columns
+        into `ip_type`, `ip_value`, preserving geometry.
+
+        Parameters
+        ----------
+        polygon_gdf : geopandas.GeoDataFrame
+            Input GeoDataFrame with wide-format score columns.
+
+        Returns
+        -------
+        geopandas.GeoDataFrame
+            Long-format GeoDataFrame with columns:
+            - ip_type : str, land-use key
+            - ip_value: float, computed score
+            - geometry: Polygon geometry
         """
-        if ax is None:
-            fig, ax = plt.subplots(figsize=(6, 4))
+        wide = self._compute_wide(polygon_gdf)
+        score_cols = list(self.land_use_to_potential.keys())
 
-        weights_for_lu = self.weights.get(land_use_key, {}).copy()
-        weights_for_lu.pop('default', None)
-
-        strong = {k: v for k, v in weights_for_lu.items() if v > 1}
-        weak = {k: v for k, v in weights_for_lu.items() if v < 1}
-        all_w = {**strong, **weak}
-        items = sorted(all_w.items(), key=lambda x: x[1], reverse=True)
-
-        labels, vals = zip(*items)
-        colors = ['green' if v > 1 else 'red' for v in vals]
-
-        ax.barh(labels, vals, color=colors)
-        ax.set_xlim(0, max(vals) + 0.5)
-        ax.invert_yaxis()
-        ax.set_title(f'Влияние факторов: {land_use_key}', fontsize=10)
-        return ax
-
-
-    def visualize_investment_maps(
-            self,
-            polygon_gdf: gpd.GeoDataFrame,
-            cols: int = 4
-        ) -> plt.Figure:
-            """
-            Отрисовывает сетку карт инвестиционной привлекательности по типам землепользования.
-
-            Args:
-                polygon_gdf (GeoDataFrame): GeoDataFrame с колонками ИП_<land_use>.
-                cols (int): Количество столбцов в сетке.
-            Returns:
-                matplotlib.figure.Figure
-            """
-            # теперь берём нужный маппинг прямо из self
-            land_use_to_potential = self.land_use_to_potential
-
-            # собираем все столбцы score
-            score_cols = [f'ИП_{lu}' for lu in land_use_to_potential.keys()]
-            vmin = polygon_gdf[score_cols].min().min()
-            vmax = polygon_gdf[score_cols].max().max()
-
-            n = len(score_cols)
-            rows = math.ceil(n / cols)
-            fig, axes = plt.subplots(rows, cols, figsize=(5 * cols, 5 * rows))
-            axes = axes.flatten()
-
-            for i, lu in enumerate(land_use_to_potential.keys()):
-                col = f'ИП_{lu}'
-                ax = axes[i]
-                mean_val = polygon_gdf[col].mean()
-
-                polygon_gdf.plot(
-                    column=col,
-                    cmap='RdYlGn',
-                    legend=False,
-                    ax=ax,
-                    edgecolor='black',
-                    vmin=vmin,
-                    vmax=vmax
-                )
-                ax.set_title(f"{lu} (средн.: {mean_val:.1f})", fontsize=12)
-                ax.axis('off')
-
-            # отключаем лишние оси
-            for j in range(i + 1, len(axes)):
-                axes[j].axis('off')
-
-            # единая цветовая шкала
-            fig.subplots_adjust(right=0.88)
-            cax = fig.add_axes([1.1, 0.15, 0.04, 0.8])
-            sm = plt.cm.ScalarMappable(
-                cmap='RdYlGn',
-                norm=plt.Normalize(vmin=vmin, vmax=vmax)
+        df_long = (
+            wide[["geometry", *score_cols]]
+            .melt(
+                id_vars="geometry",
+                value_vars=score_cols,
+                var_name="ip_type",
+                value_name="ip_value"
             )
-            sm._A = []
-            fig.colorbar(sm, cax=cax, label='Инвестиционная привлекательность')
-            plt.suptitle(
-                "Оценка видов использования территории",
-                fontsize=16, y=0.99
-            )
-            plt.tight_layout()
-            return fig
+            .dropna(subset=["ip_value"])
+            .reset_index(drop=True)
+        )
+
+        return gpd.GeoDataFrame(df_long, geometry="geometry", crs=wide.crs)

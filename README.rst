@@ -1,24 +1,17 @@
 Urbanomy: Investment Attractiveness Analysis for Land-Use
 =========================================================
-
 .. logo-start
 
 .. figure:: https://sun9-46.userapi.com/impf/aUFBStH0x_6jN9UhgwrKN1WN4hZ9Y2HMMrXT2w/NuzVobaGlZ0.jpg?size=1590x400&quality=95&crop=0,0,1878,472&sign=9d33baa41a86de35d951d4bbd8011994&type=cover_group
-   :alt: Institute of Design and Urban Studies
+   :alt: The Institute of Design and Urban Studies
+.. firgure:: https://psv4.userapi.com/s/v1/d/LQL8fQ5o0kL1VRqeuM_P9hNUklLHJ6C8muuas7YDuhKolUDx7ZO9Fw1IszJZQNHfnNqXTnzTAz5E8R2WNythf40XWGq5RO7GIVbBiSOn2CLhZravVGB-bw/ChatGPT_Image_22_maya_2025_g__18_15_35.png
+   :alt: Urbanomy logo
 
 .. logo-end
 
-.. image:: https://github.com/vasilstar97/urbanomy/actions/workflows/ci.yml/badge.svg?branch=main
-   :target: https://github.com/vasilstar97/urbanomy/actions
+|Documentation Status| |PythonVersion| |Black|
 
-.. image:: https://readthedocs.org/projects/urbanomy/badge/?version=latest
-   :target: https://urbanomy.readthedocs.io/
-
-.. image:: https://img.shields.io/badge/python-3.8%2C%203.9%2C%203.10-blue
-   :target: https://pypi.org/project/urbanomy/
-
-.. image:: https://img.shields.io/badge/code_style-black-000000
-   :target: https://github.com/psf/black
+.. readme-start 
 
 Overview
 --------

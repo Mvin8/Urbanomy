@@ -237,6 +237,7 @@ class InvestmentAttractivenessAnalyzer:
                 self.benchmarks
             )
             raw_npv_p = npv(self.discount_rate, project_cf)
+            print(f"raw_npv_p: {raw_npv_p}")
             irr_p = irr(project_cf)
             roi_p = (sum(project_cf[1:]) / -project_cf[0]
                      if project_cf and project_cf[0] < 0 else np.nan)
@@ -245,7 +246,7 @@ class InvestmentAttractivenessAnalyzer:
             inv_attr_p = gdf[DEFAULT_IP_VALUE].mean()
 
             summary.loc["project"] = {
-                "NPV": npv(raw_npv_p),
+                "NPV": raw_npv_p,
                 "IRR": irr_p,
                 "ROI": roi_p,
                 "PP_years": pp_p,

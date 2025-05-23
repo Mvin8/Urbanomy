@@ -28,8 +28,7 @@ Features
 - Automated cash-flow generation and aggregation  
 - Calculation of NPV, IRR, ROI, payback period, economic index (EI)  
 - Spatial–economic synthesis into a single INV score  
-- Utilities for normalization, quantization, and data cleaning  
-- Plotting routines for attribute weights and map grids  
+- Utilities for normalization, quantization, and data cleaning
 
 Installation
 ------------

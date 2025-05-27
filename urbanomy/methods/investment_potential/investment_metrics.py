@@ -229,18 +229,32 @@ class InvestmentAttractivenessAnalyzer:
         # Add project-level metrics only if more than one unique geometry
         unique_geom_count = gdf.geometry.apply(lambda geom: geom.wkt).nunique()
         if unique_geom_count > 1:
-            project_cf = aggregate_project_cashflows(
-                [
-                    {"area": r[area_col], "ip_type": r[ip_col]}
-                    for _, r in gdf.iterrows()
-                ],
-                self.benchmarks
-            )
+            # 1) соберём денежные потоки по каждой мульти-полигонной записи
+            all_cfs: list[list[float]] = []
+            for _, r in gdf.iterrows():
+                lu = r[ip_col]
+                prof = self.benchmarks[lu]
+                land_area = r[area_col]
+                # make_cashflow сам уже проверит built_area или density
+                cf_row = make_cashflow(lu, land_area, prof)
+                all_cfs.append(cf_row)
+
+            # 2) сложим потоки по годам в единый проектный CF
+            max_len = max(len(cf) for cf in all_cfs)
+            project_cf = [
+                sum((cf[t] if t < len(cf) else 0) for cf in all_cfs)
+                for t in range(max_len)
+            ]
+
             raw_npv_p = npv(self.discount_rate, project_cf)
-            print(f"raw_npv_p: {raw_npv_p}")
-            irr_p = irr(project_cf)
+            # 3) защищённый IRR — ловим переполнение
+            try:
+                irr_p = irr(project_cf)
+            except OverflowError:
+                irr_p = float("nan")
+
             roi_p = (sum(project_cf[1:]) / -project_cf[0]
-                     if project_cf and project_cf[0] < 0 else np.nan)
+                    if project_cf and project_cf[0] < 0 else np.nan)
             pp_p = payback_period(self.discount_rate, project_cf)
             ei_p = economic_index(raw_npv_p, irr_p, self.discount_rate)
             inv_attr_p = gdf[DEFAULT_IP_VALUE].mean()

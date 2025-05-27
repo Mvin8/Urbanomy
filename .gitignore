@@ -27,6 +27,14 @@ db.sqlite3
 #Data 
 examples/data
 examples/parsed_parts
+examples/parsed_parts_ter
+
+# data
+*.pickle
+*.parquet
+*.geojson
+*.graphml
+*.csv
 
 # Flask stuff
 instance/

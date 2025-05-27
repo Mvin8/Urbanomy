@@ -159,8 +159,14 @@ def make_cashflow(
     ValueError
         If `profile` lacks both "price_sale" and "rent_annual".
     """
-    density = profile["density"]
-    gfa = land_area * density
+    # определяем фактическую площадь застройки (GFA)
+    if "built_area" in profile:
+        # если в бенчмарке задана built_area — берём её
+        gfa = profile["built_area"]
+    else:
+        # на всякий случай — fallback на старый вариант
+        density = profile.get("density", 0)
+        gfa = land_area * density
 
     land_cost = land_area * profile.get("land_cost", 0)
     build_cost = gfa * profile["cost_build"]

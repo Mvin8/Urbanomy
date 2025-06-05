@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "urbanomy" # название вашего проекта
 version = "0.0.1"
 authors = [
-    { name = "Maksim Natykin", email = "mvin@itmo.ru" },
+    { name = "Maksim Natykin", email = "mvin@itmo.ru" }
 ] # не забудьте поменять на свое имя :)
 description = "IDU research package boilerplate"
 readme = "README.rst"
@@ -15,16 +15,16 @@ license = { file = "LICENCE" }
 
 dependencies = [ # здесь необходимо вести все устанавливаемые зависимости: пакеты, которые необходимы для адекватной работы вашей библиотеки
     "geopandas>=1.0.0,<2.0.0",
-    "numpy"
+    "numpy",
     "pandas>=2.2.3",
-    "pandera",
+    "pandera"
 ]
 
 classifiers = [ # метаданные для описания проекта пользователям, например, на PyPI: какая лицензия, какое предназначение
     "Programming Language :: Python :: 3",
     "License :: OSI Approved :: BSD License",
     "Operating System :: OS Independent",
-    "Intended Audience :: Science/Research",
+    "Intended Audience :: Science/Research"
 ]
 
 [tool.setuptools.packages.find] # что включать в сборку при установке
@@ -44,12 +44,12 @@ dev = [ # зависимости, необходимые для разработ
     "pylint==2.17.5",           # Линтинг
     "pre-commit>=3.1",          # Интеграция хуков для автоформатирования
     "build",                    # Сборка пакета для публикации
-    "twine",                    # Публикация пакета на PyPI
+    "twine"                    # Публикация пакета на PyPI
 ]
 
 test = [ # зависимости, необходимые для тестирования библиотеки
     "pytest>=7.0.0,<8.0.0",
-    "pytest-cov>=4.0.0,<5.0.0",
+    "pytest-cov>=4.0.0,<5.0.0"
 ]
 
 docs = [ # зависимости, необходимые для сборки документации
@@ -62,7 +62,7 @@ docs = [ # зависимости, необходимые для сборки д
     "autodocsumm==0.2.12",
     "myst_parser>=3.0.0,<4.0.0",
     "sphinx_rtd_theme>=1.2.0,<2.0.0",
-    "pandoc>=2.0.0,<3.0.0",
+    "pandoc>=2.0.0,<3.0.0"
 ]
 
 

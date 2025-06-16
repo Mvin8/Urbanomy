@@ -10,7 +10,7 @@ authors = [
 ] # не забудьте поменять на свое имя :)
 description = "IDU research package boilerplate"
 readme = "README.rst"
-requires-python = ">=3.10"
+requires-python = "==3.10*"
 license = { file = "LICENCE" }
 
 dependencies = [ # здесь необходимо вести все устанавливаемые зависимости: пакеты, которые необходимы для адекватной работы вашей библиотеки

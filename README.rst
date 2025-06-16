@@ -32,6 +32,7 @@ Features
 
 Installation
 ------------
+Requires Python 3.10
 Install directly from GitHub:
 
 .. code-block:: bash

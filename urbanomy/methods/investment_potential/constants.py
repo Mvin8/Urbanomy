@@ -2,7 +2,7 @@
 from typing import Final
 
 LAND_USE_TO_POTENTIAL_COLUMN: Final[dict[str, str]] = {
-    "residential": "Потенциал развития  жилой застройки",
+    "residential": "Потенциал развития жилой застройки",
     "residential_individual": "Потенциал развития жилой застройки типа ИЖС",
     "residential_lowrise":     "Потенциал развития малоэтажной жилой застройки",
     "residential_midrise":     "Потенциал развития среднеэтажной жилой застройки",

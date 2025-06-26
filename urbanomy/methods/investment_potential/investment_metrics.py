@@ -197,8 +197,11 @@ class InvestmentAttractivenessAnalyzer:
             - investment_attractiveness : mean ip_value per profile.
             Optionally includes a "project" row if multiple distinct geometries exist.
         """
+        existing_profiles = [p for p in gdf[ip_col].unique() if p in self.benchmarks]
         rows = []
-        for lu, prof in self.benchmarks.items():
+        for lu in existing_profiles:
+            prof = self.benchmarks[lu]  # получаем параметры профиля
+
             mask = gdf[ip_col] == lu
             total_area = gdf.loc[mask, area_col].sum()
 
@@ -223,7 +226,6 @@ class InvestmentAttractivenessAnalyzer:
                 "EI": ei_v,
                 "investment_attractiveness": inv_attr,
             })
-
         summary = pd.DataFrame(rows).set_index("profile")
 
         # Add project-level metrics only if more than one unique geometry

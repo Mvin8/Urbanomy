@@ -2,6 +2,7 @@
 from typing import Final
 
 LAND_USE_TO_POTENTIAL_COLUMN: Final[dict[str, str]] = {
+    "residential": "Потенциал развития жилой застройки",
     "residential_individual": "Потенциал развития жилой застройки типа ИЖС",
     "residential_lowrise":     "Потенциал развития малоэтажной жилой застройки",
     "residential_midrise":     "Потенциал развития среднеэтажной жилой застройки",
@@ -15,6 +16,14 @@ LAND_USE_TO_POTENTIAL_COLUMN: Final[dict[str, str]] = {
 }
 
 LAND_USE_WEIGHTS = {
+    'residential': {
+        'Население': 1.3,
+        'Социальное обеспечение': 1.4,
+        'Экологическая ситуация': 1.5,
+        'Средняя доступность до близлежащего крупного населенного пункта': 1.2,
+        'Транспортное обеспечение': 1.1,
+        'default': 1.0
+    },
     'residential_individual': {
         'Население': 1.3,
         'Социальное обеспечение': 1.4,
@@ -88,6 +97,7 @@ LAND_USE_WEIGHTS = {
 
 
 INVESTMENT_WEIGHTS = {
+    "residential":            (0.4, 0.6),
     "residential_individual": (0.4, 0.6),
     "residential_lowrise":    (0.4, 0.6),
     "residential_midrise":    (0.5, 0.5),

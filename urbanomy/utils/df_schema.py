@@ -1,7 +1,7 @@
 # df_schema.py
 
 import pandas as pd
-import pandera.pandas as pa
+import pandera as pa
 from pandera.typing import Index
 from loguru import logger
 

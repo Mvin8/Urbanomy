@@ -2,7 +2,7 @@
 
 from loguru import logger
 import geopandas as gpd
-import pandera.pandas as pa
+import pandera as pa
 import pandas as pd
 from shapely.geometry.base import BaseGeometry
 from pandera.typing.geopandas import GeoSeries

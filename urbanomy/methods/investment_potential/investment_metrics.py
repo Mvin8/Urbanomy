@@ -21,6 +21,7 @@ from .utils_metrics import (
     make_cashflow,
     nanminmax,
     normalize_series,
+    scale_to_0_100,
     to_numeric,
     economic_index,
     aggregate_project_cashflows,
@@ -115,6 +116,9 @@ class InvestmentAttractivenessAnalyzer:
             - summary : pandas.DataFrame
                 Profile-level (and optional project-level) metrics indexed by profile.
         """
+        # Ensure we don't mutate a view (avoids SettingWithCopyWarning on slices)
+        gdf = gdf.copy()
+
         # 1) Add area if missing
         area_col = DEFAULT_AREA_COL if DEFAULT_AREA_COL in gdf.columns else "__area_tmp"
         if area_col == "__area_tmp":
@@ -138,34 +142,49 @@ class InvestmentAttractivenessAnalyzer:
         s_raw = gdf[val_col].astype(float)
         e_raw = gdf[f"ECON_{self.metric}"].astype(float)
 
-        s_min, s_max = s_raw.min(), s_raw.max()
-        e_min, e_max = e_raw.min(), e_raw.max()
-        if self.metric in ("NPV", "ROI"):
-            e_abs = max(abs(e_min), abs(e_max))
-            e_min, e_max = -e_abs, e_abs
+        # Spatial score is defined on a fixed scale 1..5; convert to 0..100
+        s_norm = scale_to_0_100(s_raw, 1.0, 5.0)
 
-        s_norm = normalize_series(s_raw, s_min, s_max)
-        e_norm = normalize_series(e_raw, e_min, e_max)
+        # Economic metric normalization
+        if self.metric == "EI":
+            # EI is already 0..100
+            e_norm = e_raw.clip(lower=0, upper=100)
+        else:
+            e_min, e_max = e_raw.min(), e_raw.max()
+            if self.metric in ("NPV", "ROI"):
+                e_abs = max(abs(e_min), abs(e_max))
+                e_min, e_max = -e_abs, e_abs
+            e_norm = normalize_series(e_raw, e_min, e_max)
 
+        # Map weights; if a profile is missing in weights, fallback to mean weights
         ws = pd.Series({lu: w_s for lu, (w_s, _) in self.weights.items()})
         we = pd.Series({lu: w_e for lu, (_, w_e) in self.weights.items()})
-        w_s_row = gdf[ip_col].map(ws)
-        w_e_row = gdf[ip_col].map(we)
+        w_s_row = gdf[ip_col].map(ws).fillna(ws.mean())
+        w_e_row = gdf[ip_col].map(we).fillna(we.mean())
 
         gdf["INV"] = (w_s_row * s_norm + w_e_row * e_norm).round(2)
 
         # 6) Extend summary with INV per profile/project
         summary = self._compute_summary_inv(summary)
+        # Round numeric columns in summary to 2 decimals for presentation
+        for col in summary.columns:
+            if pd.api.types.is_numeric_dtype(summary[col]):
+                summary[col] = summary[col].round(2)
 
         # 7) Drop temporary area column
         if area_col == "__area_tmp":
-            gdf.drop(columns=[area_col], inplace=True)
+            gdf = gdf.drop(columns=[area_col])
 
         # 8) Select output columns
         out_cols = [
             "geometry", ip_col, val_col
         ] + [f"ECON_{e}" for e in ("NPV", "IRR", "ROI", "PP_years", "EI")] + ["INV"]
-        return gdf[out_cols], summary
+        result_gdf = gdf[out_cols].copy()
+        # Round numeric columns in output GeoDataFrame to 2 decimals (keep geometry as is)
+        for col in result_gdf.columns:
+            if col != "geometry" and pd.api.types.is_numeric_dtype(result_gdf[col]):
+                result_gdf[col] = result_gdf[col].round(2)
+        return result_gdf, summary
 
     def _build_profile_summary(
         self,
@@ -262,7 +281,7 @@ class InvestmentAttractivenessAnalyzer:
             inv_attr_p = gdf[DEFAULT_IP_VALUE].mean()
 
             summary.loc["project"] = {
-                "NPV": raw_npv_p,
+                "NPV": quantize(raw_npv_p),
                 "IRR": irr_p,
                 "ROI": roi_p,
                 "PP_years": pp_p,
@@ -293,21 +312,30 @@ class InvestmentAttractivenessAnalyzer:
             - INV : combined investment attractiveness metric.
         """
         df = df.copy()
-        s = to_numeric(df["investment_attractiveness"])
-        e = to_numeric(df[self.metric])
+        s = to_numeric(df["investment_attractiveness"]).astype(float)
+        e = to_numeric(df[self.metric]).astype(float)
 
-        s_min, s_max = s.min(), s.max()
-        e_min, e_max = e.min(), e.max()
-        if self.metric in ("NPV", "ROI"):
-            e_abs = max(abs(e_min), abs(e_max))
-            e_min, e_max = -e_abs, e_abs
+        # ip_value summary is on fixed 1..5 scale
+        s_norm = scale_to_0_100(s, 1.0, 5.0)
 
-        s_norm = normalize_series(s, s_min, s_max)
-        e_norm = normalize_series(e, e_min, e_max)
+        # Economic metric normalization for summary
+        if self.metric == "EI":
+            e_norm = e.clip(lower=0, upper=100)
+        else:
+            e_min, e_max = e.min(), e.max()
+            if self.metric in ("NPV", "ROI"):
+                e_abs = max(abs(e_min), abs(e_max))
+                e_min, e_max = -e_abs, e_abs
+            e_norm = normalize_series(e, e_min, e_max)
 
         ws = pd.Series({lu: w_s for lu, (w_s, _) in self.weights.items()})
         we = pd.Series({lu: w_e for lu, (_, w_e) in self.weights.items()})
-        ws["project"], we["project"] = ws.mean(), we.mean()
+        # Align weights to df index and fill missing with means
+        ws = ws.reindex(df.index).fillna(ws.mean())
+        we = we.reindex(df.index).fillna(we.mean())
+        # Provide project defaults as means if such row exists
+        if "project" in df.index:
+            ws.loc["project"], we.loc["project"] = ws.mean(), we.mean()
 
         df["INV"] = (ws * s_norm + we * e_norm).round(2)
         return df

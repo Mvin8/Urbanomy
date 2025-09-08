@@ -232,9 +232,39 @@ def normalize_series(
     pandas.Series
         Normalized values scaled to [0, 100], or zeros if `vmin == vmax`.
     """
+    # Always preserve the input index to keep alignment with original data.
+    ss = pd.Series(s, dtype=float)
     if vmax > vmin:
-        return 100 * (pd.Series(s, dtype=float) - vmin) / (vmax - vmin)
-    return pd.Series(0.0, index=pd.RangeIndex(len(s)))
+        return 100 * (ss - vmin) / (vmax - vmin)
+    # Degenerate range: return zeros aligned to the original index
+    return pd.Series(0.0, index=ss.index)
+
+
+def scale_to_0_100(s: Sequence[float], src_min: float, src_max: float) -> pd.Series:
+    """
+    Linearly scale values from a known source range to 0..100.
+
+    Preserves index and clamps values to the source range before scaling.
+
+    Parameters
+    ----------
+    s : sequence of float
+        Input values.
+    src_min : float
+        Lower bound of the source scale.
+    src_max : float
+        Upper bound of the source scale.
+
+    Returns
+    -------
+    pandas.Series
+        Values scaled to [0, 100].
+    """
+    ss = pd.Series(s, dtype=float)
+    if src_max == src_min:
+        return pd.Series(0.0, index=ss.index)
+    ss = ss.clip(lower=src_min, upper=src_max)
+    return 100 * (ss - src_min) / (src_max - src_min)
 
 
 def to_numeric(series: pd.Series) -> pd.Series:

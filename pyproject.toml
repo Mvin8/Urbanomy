@@ -14,12 +14,14 @@ requires-python = ">=3.10,<3.11"
 license = { file = "LICENCE" }
 
 dependencies = [ # здесь необходимо вести все устанавливаемые зависимости: пакеты, которые необходимы для адекватной работы вашей библиотеки
+    "blocksnet[full,ipynb]==1.0.0.a1",
     "geopandas>=1.0.0,<2.0.0",
     "pandas>=2.2.3",         
     "numpy",                 
     "pandera",               
     "matplotlib",            
-    "loguru",      
+    "loguru",
+    "libpysal"
 ]
 
 classifiers = [ # метаданные для описания проекта пользователям, например, на PyPI: какая лицензия, какое предназначение

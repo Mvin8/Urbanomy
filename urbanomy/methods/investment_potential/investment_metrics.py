@@ -1,54 +1,124 @@
-"""
-Module for computing investment attractiveness metrics for land-use polygons.
-"""
+"""Utilities for computing investment attractiveness metrics per polygon."""
 
 from __future__ import annotations
-from typing import Dict, Any, Tuple
+
+from dataclasses import dataclass
+from typing import Any, Sequence
 
 import geopandas as gpd
-import pandas as pd
 import numpy as np
+import pandas as pd
+
+from urbanomy.utils.investment_input import (
+    INVESTMENT_NUMERIC_COLUMNS,
+    prepare_investment_input,
+)
 
 from .constants import (
-    DEFAULT_ECON_METRIC,
     DEFAULT_DISCOUNT_RATE,
-    DEFAULT_AREA_COL,
-    DEFAULT_IP_TYPE,
+    DEFAULT_ECON_METRIC,
     DEFAULT_IP_VALUE,
     INVESTMENT_WEIGHTS,
 )
 from .utils_metrics import (
+    economic_index,
+    irr,
     make_cashflow,
     nanminmax,
     normalize_series,
-    scale_to_0_100,
-    to_numeric,
-    economic_index,
-    aggregate_project_cashflows,
+    npv,
+    payback_period,
+    quantize,
 )
-from .utils_metrics import npv, irr, payback_period, quantize  # если эти финансовые утилиты тоже в utils
+
+
+@dataclass(frozen=True)
+class InvestmentMetricsResult:
+    """Calculated economic metrics for a cash-flow sequence."""
+
+    npv: float
+    irr: float
+    roi: float
+    payback_years: float
+    economic_index: float
+
+    @classmethod
+    def from_cashflow(
+        cls,
+        cashflow: Sequence[float],
+        discount_rate: float,
+    ) -> "InvestmentMetricsResult":
+        cashflow = list(cashflow or [])
+
+        raw_npv = npv(discount_rate, cashflow)
+        quantized = quantize(raw_npv)
+        npv_value = float(quantized) if quantized is not None else np.nan
+
+        irr_raw = irr(cashflow)
+        irr_value = float(irr_raw) if irr_raw is not None else np.nan
+
+        roi_value = np.nan
+        if cashflow and cashflow[0] < 0:
+            denom = -cashflow[0]
+            if denom:
+                roi_value = sum(cashflow[1:]) / denom
+
+        payback_raw = payback_period(discount_rate, cashflow)
+        payback_value = float(payback_raw) if payback_raw is not None else np.nan
+
+        ei_value = economic_index(raw_npv, irr_raw, discount_rate)
+
+        return cls(
+            npv=npv_value,
+            irr=irr_value,
+            roi=roi_value,
+            payback_years=payback_value,
+            economic_index=ei_value,
+        )
+
+
+@dataclass(frozen=True)
+class PreparedProfile:
+    """Resolved profile parameters ready for cash-flow computation."""
+
+    params: dict[str, Any]
+    land_area: float
+    built_area: float
+    gross_floor_area: float
+    land_cost_total: float
+
+
+@dataclass(frozen=True)
+class RowComputation:
+    """Computed financial metrics for an individual polygon."""
+
+    index: Any
+    land_use: str
+    land_area: float
+    built_area: float
+    land_cost_total: float
+    construction_cost: float
+    investment_need: float
+    cashflow: list[float]
+    metrics: InvestmentMetricsResult
+
+
+@dataclass(frozen=True)
+class NormalizedMetricRange:
+    """Normalized metric values alongside their source bounds."""
+
+    values: pd.Series
+    normalized: pd.Series
+    minimum: float
+    maximum: float
+
+    @property
+    def has_valid(self) -> bool:
+        return bool(self.values.notna().any())
 
 
 class InvestmentAttractivenessAnalyzer:
-    """
-    Compute economic and combined investment attractiveness metrics
-    for each polygon based on its land-use type.
-
-    Uses per-profile benchmarks and weights to calculate:
-    - Economic metrics: NPV, IRR, ROI, payback period, economic index.
-    - Spatial-economic combined metric INV.
-
-    Attributes
-    ----------
-    benchmarks : dict[str, dict[str, Any]]
-        Mapping from land-use profile name to its cashflow parameters.
-    weights : dict[str, tuple[float, float]]
-        Weights for combining spatial (ip_value) and economic metrics for each profile.
-    metric : str
-        Economic metric used for combination, e.g., "NPV" or "IRR".
-    discount_rate : float
-        Default discount rate for cashflow calculations if not specified in benchmarks.
-    """
+    """Compute investment attractiveness metrics per polygon plus project summary."""
 
     def __init__(
         self,
@@ -57,285 +127,376 @@ class InvestmentAttractivenessAnalyzer:
         econ_metric: str = DEFAULT_ECON_METRIC,
         discount_rate: float | None = None,
     ) -> None:
-        """
-        Initialize the analyzer with benchmarks and weights.
-
-        Parameters
-        ----------
-        benchmarks : dict[str, dict[str, Any]]
-            Per-profile cashflow parameters, keyed by profile name.
-        weights_dict : dict[str, tuple[float, float]], optional
-            Spatial vs economic weights for each profile (w_spatial, w_economic).
-            Defaults to INVESTMENT_WEIGHTS.
-        econ_metric : str, default DEFAULT_ECON_METRIC
-            Economic metric to use when combining (e.g., "NPV", "IRR").
-        discount_rate : float, optional
-            Default discount rate to apply if not present in profile parameters.
-
-        Returns
-        -------
-        None
-        """
         self.benchmarks = benchmarks
         self.weights = weights_dict or INVESTMENT_WEIGHTS
         self.metric = econ_metric.upper()
-        self.discount_rate = (
-            discount_rate if discount_rate is not None else DEFAULT_DISCOUNT_RATE
+        self.discount_rate = discount_rate if discount_rate is not None else DEFAULT_DISCOUNT_RATE
+
+    @staticmethod
+    def _to_float(value: Any) -> float:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return float("nan")
+
+    @staticmethod
+    def _round_clean(values: pd.Series | np.ndarray, decimals: int = 2) -> pd.Series:
+        serie = pd.Series(values, copy=True, dtype=float)
+        serie = serie.round(decimals)
+        tol = 10 ** (-decimals)
+        serie[np.isclose(serie, 0.0, atol=tol, rtol=0.0)] = 0.0
+        return serie
+
+    @staticmethod
+    def _coerce_numeric_columns(gdf: pd.DataFrame, columns: Sequence[str]) -> None:
+        for col in columns:
+            if col in gdf.columns:
+                gdf[col] = pd.to_numeric(gdf[col], errors="coerce")
+
+    def _prepare_profile(self, row: pd.Series, base_profile: dict[str, Any]) -> PreparedProfile:
+        params = dict(base_profile or {})
+
+        land_area = self._to_float(row.get("site_area"))
+        if not np.isfinite(land_area) or land_area <= 0:
+            geom = row.get("geometry")
+            land_area = float(getattr(geom, "area", float("nan")))
+        if not np.isfinite(land_area) or land_area <= 0:
+            raise ValueError(f"Polygon {row.name} has no valid land area")
+
+        land_cost_total = self._to_float(row.get("price_pred"))
+        if np.isfinite(land_cost_total) and land_area > 0:
+            params["land_cost"] = land_cost_total / land_area
+
+        living = self._to_float(row.get("living_area"))
+        non_living = self._to_float(row.get("non_living_area"))
+        built_area = living + non_living
+        if not np.isfinite(built_area) or built_area <= 0:
+            built_area = self._to_float(row.get("build_floor_area"))
+
+        if np.isfinite(built_area) and built_area > 0:
+            params["built_area"] = built_area
+        else:
+            params.pop("built_area", None)
+            built_area = float("nan")
+
+        if np.isfinite(built_area):
+            gross_floor_area = built_area
+        else:
+            density = self._to_float(params.get("density"))
+            gross_floor_area = (
+                land_area * density if np.isfinite(density) and density > 0 else float("nan")
+            )
+
+        share_val = self._to_float(row.get("share"))
+        if np.isfinite(share_val) and share_val > 0:
+            params["rent_share"] = max(0.0, min(share_val, 1.0))
+
+        return PreparedProfile(
+            params=params,
+            land_area=land_area,
+            built_area=built_area,
+            gross_floor_area=gross_floor_area,
+            land_cost_total=land_cost_total,
         )
+
+    def _calculate_row_metrics(self, idx: Any, row: pd.Series) -> RowComputation:
+        land_use = str(row.get("land_use"))
+        if land_use not in self.benchmarks:
+            raise KeyError(f"No benchmark settings for land_use='{land_use}'")
+
+        profile = self._prepare_profile(row, self.benchmarks[land_use])
+        cashflow = make_cashflow(land_use, profile.land_area, profile.params)
+        discount_rate = profile.params.get("discount_rate", self.discount_rate)
+
+        metrics = InvestmentMetricsResult.from_cashflow(cashflow, discount_rate)
+
+        cost_build_unit = self._to_float(profile.params.get("cost_build"))
+        if np.isfinite(profile.gross_floor_area) and np.isfinite(cost_build_unit):
+            construction_cost = profile.gross_floor_area * cost_build_unit
+        else:
+            construction_cost = float("nan")
+
+        finite_capex = [
+            value
+            for value in (profile.land_cost_total, construction_cost)
+            if np.isfinite(value)
+        ]
+        investment_need = float(sum(finite_capex)) if finite_capex else float("nan")
+
+        return RowComputation(
+            index=idx,
+            land_use=land_use,
+            land_area=profile.land_area,
+            built_area=profile.built_area,
+            land_cost_total=profile.land_cost_total,
+            construction_cost=construction_cost,
+            investment_need=investment_need,
+            cashflow=list(cashflow),
+            metrics=metrics,
+        )
+
+    def _normalize_spatial_metric(self, price_series: pd.Series) -> NormalizedMetricRange:
+        if price_series.notna().any():
+            s_min, s_max = nanminmax(price_series[price_series.notna()])
+            normalized = normalize_series(price_series.fillna(s_min), s_min, s_max).clip(0, 100)
+        else:
+            s_min = s_max = 0.0
+            normalized = pd.Series(0.0, index=price_series.index)
+        return NormalizedMetricRange(price_series, normalized, s_min, s_max)
+
+    def _normalize_economic_metric(self, series: pd.Series) -> NormalizedMetricRange:
+        if self.metric == "EI":
+            normalized = series.clip(lower=0, upper=100).fillna(0.0)
+            return NormalizedMetricRange(series, normalized, float("nan"), float("nan"))
+
+        valid = series.notna()
+        if valid.any():
+            e_min, e_max = nanminmax(series[valid])
+            if self.metric in {"NPV", "ROI"}:
+                bound = max(abs(e_min), abs(e_max))
+                e_min, e_max = -bound, bound
+            normalized = normalize_series(series.fillna(e_min), e_min, e_max).clip(0, 100)
+        else:
+            e_min = e_max = 0.0
+            normalized = pd.Series(0.0, index=series.index)
+        return NormalizedMetricRange(series, normalized, e_min, e_max)
+
+    @staticmethod
+    def _aggregate_cashflows(cashflows: Sequence[Sequence[float]]) -> list[float]:
+        sequences = [list(cf) for cf in cashflows if cf]
+        if not sequences:
+            return []
+        max_len = max(len(cf) for cf in sequences)
+        return [
+            sum(cf[i] if i < len(cf) else 0.0 for cf in sequences)
+            for i in range(max_len)
+        ]
+
+    def _resolve_weights(
+        self, land_use_series: pd.Series
+    ) -> tuple[pd.Series, pd.Series, float, float]:
+        spatial_lookup = {lu: weights[0] for lu, weights in self.weights.items()}
+        economic_lookup = {lu: weights[1] for lu, weights in self.weights.items()}
+        ws_mean = float(np.mean(list(spatial_lookup.values()))) if spatial_lookup else 0.5
+        we_mean = float(np.mean(list(economic_lookup.values()))) if economic_lookup else 0.5
+        spatial_weights = land_use_series.map(spatial_lookup).fillna(ws_mean)
+        economic_weights = land_use_series.map(economic_lookup).fillna(we_mean)
+        return spatial_weights, economic_weights, ws_mean, we_mean
 
     def calculate_investment_metrics(
         self,
         gdf: gpd.GeoDataFrame,
     ) -> tuple[gpd.GeoDataFrame, pd.DataFrame]:
-        """
-        Compute row-level economic metrics and combined INV for each polygon.
+        if gdf.empty:
+            return gdf.copy(), pd.DataFrame()
 
-        This method:
-        1. Ensures an area column exists (geometry.area).
-        2. Validates 'ip_type' and 'ip_value' columns in long format.
-        3. Builds a summary of economic metrics per profile (and optional project).
-        4. Maps economic metrics back to each row in gdf as ECON_* columns.
-        5. Normalizes spatial and economic values and computes INV row-wise.
-        6. Extends summary with INV per profile and project.
-        7. Cleans up any temporary area column and returns results.
+        working = prepare_investment_input(gdf)
+        pd.set_option("display.float_format", lambda v: f"{v:,.2f}")
 
-        Parameters
-        ----------
-        gdf : geopandas.GeoDataFrame
-            Input GeoDataFrame with columns:
-            - geometry: Polygon geometries.
-            - ip_type : land-use profile identifier.
-            - ip_value: numerical spatial attractiveness score.
+        self._coerce_numeric_columns(working, INVESTMENT_NUMERIC_COLUMNS)
 
-        Returns
-        -------
-        tuple[gpd.GeoDataFrame, pd.DataFrame]
-            - enriched_gdf : GeoDataFrame
-                Original gdf supplemented with columns:
-                ECON_NPV, ECON_IRR, ECON_ROI, ECON_PP_years, ECON_EI, INV.
-            - summary : pandas.DataFrame
-                Profile-level (and optional project-level) metrics indexed by profile.
-        """
-        # Ensure we don't mutate a view (avoids SettingWithCopyWarning on slices)
-        gdf = gdf.copy()
+        row_results = [
+            self._calculate_row_metrics(idx, row)
+            for idx, row in working.iterrows()
+        ]
 
-        # 1) Add area if missing
-        area_col = DEFAULT_AREA_COL if DEFAULT_AREA_COL in gdf.columns else "__area_tmp"
-        if area_col == "__area_tmp":
-            gdf[area_col] = gdf.geometry.area
-
-        # 2) Check for long format ip_type/ip_value
-        has_ip = {DEFAULT_IP_TYPE, DEFAULT_IP_VALUE}.issubset(gdf.columns)
-        ip_col = DEFAULT_IP_TYPE if has_ip else None
-        val_col = DEFAULT_IP_VALUE if has_ip else None
-        if ip_col is None:
-            raise ValueError("GeoDataFrame must contain 'ip_type' and 'ip_value' columns")
-
-        # 3) Build profile summary (economic metrics + investment_attractiveness)
-        summary = self._build_profile_summary(gdf, area_col, ip_col)
-
-        # 4) Map summary economic metrics back to each row
-        for econ in ("NPV", "IRR", "ROI", "PP_years", "EI"):
-            gdf[f"ECON_{econ}"] = gdf[ip_col].map(summary[econ])
-
-        # 5) Normalize and compute INV per row
-        s_raw = gdf[val_col].astype(float)
-        e_raw = gdf[f"ECON_{self.metric}"].astype(float)
-
-        # Spatial score is defined on a fixed scale 1..5; convert to 0..100
-        s_norm = scale_to_0_100(s_raw, 1.0, 5.0)
-
-        # Economic metric normalization
-        if self.metric == "EI":
-            # EI is already 0..100
-            e_norm = e_raw.clip(lower=0, upper=100)
-        else:
-            e_min, e_max = e_raw.min(), e_raw.max()
-            if self.metric in ("NPV", "ROI"):
-                e_abs = max(abs(e_min), abs(e_max))
-                e_min, e_max = -e_abs, e_abs
-            e_norm = normalize_series(e_raw, e_min, e_max)
-
-        # Map weights; if a profile is missing in weights, fallback to mean weights
-        ws = pd.Series({lu: w_s for lu, (w_s, _) in self.weights.items()})
-        we = pd.Series({lu: w_e for lu, (_, w_e) in self.weights.items()})
-        w_s_row = gdf[ip_col].map(ws).fillna(ws.mean())
-        w_e_row = gdf[ip_col].map(we).fillna(we.mean())
-
-        gdf["INV"] = (w_s_row * s_norm + w_e_row * e_norm).round(2)
-
-        # 6) Extend summary with INV per profile/project
-        summary = self._compute_summary_inv(summary)
-        # Round numeric columns in summary to 2 decimals for presentation
-        for col in summary.columns:
-            if pd.api.types.is_numeric_dtype(summary[col]):
-                summary[col] = summary[col].round(2)
-
-        # 7) Drop temporary area column
-        if area_col == "__area_tmp":
-            gdf = gdf.drop(columns=[area_col])
-
-        # 8) Select output columns
-        out_cols = [
-            "geometry", ip_col, val_col
-        ] + [f"ECON_{e}" for e in ("NPV", "IRR", "ROI", "PP_years", "EI")] + ["INV"]
-        result_gdf = gdf[out_cols].copy()
-        # Round numeric columns in output GeoDataFrame to 2 decimals (keep geometry as is)
-        for col in result_gdf.columns:
-            if col != "geometry" and pd.api.types.is_numeric_dtype(result_gdf[col]):
-                result_gdf[col] = result_gdf[col].round(2)
-        return result_gdf, summary
-
-    def _build_profile_summary(
-        self,
-        gdf: gpd.GeoDataFrame,
-        area_col: str,
-        ip_col: str
-    ) -> pd.DataFrame:
-        """
-        Build a summary of economic metrics per land-use profile and optional project.
-
-        Parameters
-        ----------
-        gdf : geopandas.GeoDataFrame
-            Input GeoDataFrame containing rows with ip_type and area.
-        area_col : str
-            Name of the column containing polygon areas.
-        ip_col : str
-            Name of the column containing land-use profile identifiers.
-
-        Returns
-        -------
-        pandas.DataFrame
-            DataFrame indexed by profile name with columns:
-            - NPV          : quantized net present value.
-            - IRR          : internal rate of return.
-            - ROI          : return on investment.
-            - PP_years     : payback period in years.
-            - EI           : economic index.
-            - investment_attractiveness : mean ip_value per profile.
-            Optionally includes a "project" row if multiple distinct geometries exist.
-        """
-        existing_profiles = [p for p in gdf[ip_col].unique() if p in self.benchmarks]
-        rows = []
-        for lu in existing_profiles:
-            prof = self.benchmarks[lu]  # получаем параметры профиля
-
-            mask = gdf[ip_col] == lu
-            total_area = gdf.loc[mask, area_col].sum()
-
-            cf = make_cashflow(lu, total_area, prof)
-            rate = prof.get("discount_rate", self.discount_rate)
-
-            raw_npv = npv(rate, cf)
-            npv_v = quantize(raw_npv)
-            irr_v = irr(cf)
-            roi_v = (sum(cf[1:]) / -cf[0] if cf and cf[0] < 0 else np.nan)
-            pp_v = payback_period(rate, cf)
-            ei_v = economic_index(raw_npv, irr_v, rate)
-
-            inv_attr = gdf.loc[mask, DEFAULT_IP_VALUE].mean()
-
-            rows.append({
-                "profile": lu,
-                "NPV": npv_v,
-                "IRR": irr_v,
-                "ROI": roi_v,
-                "PP_years": pp_v,
-                "EI": ei_v,
-                "investment_attractiveness": inv_attr,
-            })
-        summary = pd.DataFrame(rows).set_index("profile")
-
-        # Add project-level metrics only if more than one unique geometry
-        unique_geom_count = gdf.geometry.apply(lambda geom: geom.wkt).nunique()
-        if unique_geom_count > 1:
-            # 1) соберём денежные потоки по каждой мульти-полигонной записи
-            all_cfs: list[list[float]] = []
-            for _, r in gdf.iterrows():
-                lu = r[ip_col]
-                prof = self.benchmarks[lu]
-                land_area = r[area_col]
-                # make_cashflow сам уже проверит built_area или density
-                cf_row = make_cashflow(lu, land_area, prof)
-                all_cfs.append(cf_row)
-
-            # 2) сложим потоки по годам в единый проектный CF
-            max_len = max(len(cf) for cf in all_cfs)
-            project_cf = [
-                sum((cf[t] if t < len(cf) else 0) for cf in all_cfs)
-                for t in range(max_len)
-            ]
-
-            raw_npv_p = npv(self.discount_rate, project_cf)
-            # 3) защищённый IRR — ловим переполнение
-            try:
-                irr_p = irr(project_cf)
-            except OverflowError:
-                irr_p = float("nan")
-
-            roi_p = (sum(project_cf[1:]) / -project_cf[0]
-                    if project_cf and project_cf[0] < 0 else np.nan)
-            pp_p = payback_period(self.discount_rate, project_cf)
-            ei_p = economic_index(raw_npv_p, irr_p, self.discount_rate)
-            inv_attr_p = gdf[DEFAULT_IP_VALUE].mean()
-
-            summary.loc["project"] = {
-                "NPV": quantize(raw_npv_p),
-                "IRR": irr_p,
-                "ROI": roi_p,
-                "PP_years": pp_p,
-                "EI": ei_p,
-                "investment_attractiveness": inv_attr_p,
+        metrics_records = [
+            {
+                "_index": result.index,
+                "ECON_NPV": result.metrics.npv,
+                "ECON_IRR": result.metrics.irr,
+                "ECON_ROI": result.metrics.roi,
+                "ECON_PP_years": result.metrics.payback_years,
+                "ECON_EI": result.metrics.economic_index,
+                "land_area": result.land_area,
+                "built_area": result.built_area,
+                "land_cost": result.land_cost_total,
+                "construction_cost": result.construction_cost,
+                "investment_need": result.investment_need,
             }
+            for result in row_results
+        ]
+        metrics_df = pd.DataFrame.from_records(metrics_records).set_index("_index")
+        working = working.join(metrics_df)
 
-        summary[["IRR", "ROI", "PP_years", "EI"]] = summary[
-            ["IRR", "ROI", "PP_years", "EI"]
-        ].round(2)
+        working["NPV"] = working["ECON_NPV"]
+        working["IRR"] = working["ECON_IRR"]
+        working["ROI"] = working["ECON_ROI"]
+        working["PP_years"] = working["ECON_PP_years"]
+        working["EI"] = working["ECON_EI"]
 
-        return summary
+        price_series = (
+            pd.to_numeric(working[DEFAULT_IP_VALUE], errors="coerce")
+            if DEFAULT_IP_VALUE in working.columns
+            else pd.Series(0.0, index=working.index)
+        )
+        spatial_range = self._normalize_spatial_metric(price_series)
+        working["spatial_potential"] = spatial_range.values
 
-    def _compute_summary_inv(self, df: pd.DataFrame) -> pd.DataFrame:
-        """
-        Normalize summary metrics and compute INV per profile and project.
+        econ_metric_col = f"ECON_{self.metric}"
+        if econ_metric_col not in working.columns:
+            raise ValueError(f"Economic metric '{self.metric}' is not available")
+        econ_values = pd.to_numeric(working[econ_metric_col], errors="coerce")
+        economic_range = self._normalize_economic_metric(econ_values)
 
-        Parameters
-        ----------
-        df : pandas.DataFrame
-            Summary DataFrame with index 'profile' and columns:
-            'investment_attractiveness' and the chosen econ metric (e.g. 'NPV').
+        spatial_weights, economic_weights, ws_mean, we_mean = self._resolve_weights(working["land_use"])
+        working["INV"] = (
+            spatial_weights * spatial_range.normalized
+            + economic_weights * economic_range.normalized
+        ).round(2)
 
-        Returns
-        -------
-        pandas.DataFrame
-            Summary DataFrame with added column:
-            - INV : combined investment attractiveness metric.
-        """
-        df = df.copy()
-        s = to_numeric(df["investment_attractiveness"]).astype(float)
-        e = to_numeric(df[self.metric]).astype(float)
+        summary = pd.DataFrame(
+            {
+                "land_use": working["land_use"],
+                "land_area": working["land_area"],
+                "built_area": working["built_area"],
+                "land_cost": working["land_cost"],
+                "construction_cost": working["construction_cost"],
+                "investment_need": working["investment_need"],
+                "NPV": working["NPV"],
+                "IRR": working["IRR"],
+                "ROI": working["ROI"],
+                "PP_years": working["PP_years"],
+                "EI": working["EI"],
+                "spatial_potential": working["spatial_potential"],
+                "INV": working["INV"],
+            },
+            index=working.index,
+        )
 
-        # ip_value summary is on fixed 1..5 scale
-        s_norm = scale_to_0_100(s, 1.0, 5.0)
+        project_cf = self._aggregate_cashflows(result.cashflow for result in row_results)
+        project_metrics = (
+            InvestmentMetricsResult.from_cashflow(project_cf, self.discount_rate)
+            if project_cf
+            else None
+        )
 
-        # Economic metric normalization for summary
-        if self.metric == "EI":
-            e_norm = e.clip(lower=0, upper=100)
+        total_area = working["land_area"].sum(skipna=True)
+        total_built = working["built_area"].sum(skipna=True)
+        total_land_cost = working["land_cost"].sum(skipna=True)
+        total_construction_cost = working["construction_cost"].sum(skipna=True)
+        total_investment_need = working["investment_need"].sum(skipna=True)
+
+        s_project = np.nan
+        if total_area > 0 and price_series.notna().any():
+            weighted = price_series * working["land_area"]
+            s_project = float(weighted.sum(skipna=True) / total_area)
+
+        e_project_val = np.nan
+        e_norm_project = 0.0
+        if project_metrics is not None:
+            if self.metric == "EI":
+                e_project_val = project_metrics.economic_index
+                if np.isfinite(e_project_val):
+                    e_norm_project = float(np.clip(e_project_val, 0, 100))
+            else:
+                metric_map = {
+                    "NPV": project_metrics.npv,
+                    "IRR": project_metrics.irr,
+                    "ROI": project_metrics.roi,
+                    "PP_years": project_metrics.payback_years,
+                }
+                e_project_val = metric_map.get(self.metric, project_metrics.npv)
+                if (
+                    np.isfinite(e_project_val)
+                    and economic_range.has_valid
+                    and economic_range.maximum > economic_range.minimum
+                ):
+                    e_norm_project = float(
+                        np.clip(
+                            100
+                            * (e_project_val - economic_range.minimum)
+                            / (economic_range.maximum - economic_range.minimum),
+                            0,
+                            100,
+                        )
+                    )
+
+        if (
+            np.isfinite(s_project)
+            and spatial_range.has_valid
+            and spatial_range.maximum > spatial_range.minimum
+        ):
+            s_norm_project = float(
+                np.clip(
+                    100
+                    * (s_project - spatial_range.minimum)
+                    / (spatial_range.maximum - spatial_range.minimum),
+                    0,
+                    100,
+                )
+            )
         else:
-            e_min, e_max = e.min(), e.max()
-            if self.metric in ("NPV", "ROI"):
-                e_abs = max(abs(e_min), abs(e_max))
-                e_min, e_max = -e_abs, e_abs
-            e_norm = normalize_series(e, e_min, e_max)
+            s_norm_project = 0.0
 
-        ws = pd.Series({lu: w_s for lu, (w_s, _) in self.weights.items()})
-        we = pd.Series({lu: w_e for lu, (_, w_e) in self.weights.items()})
-        # Align weights to df index and fill missing with means
-        ws = ws.reindex(df.index).fillna(ws.mean())
-        we = we.reindex(df.index).fillna(we.mean())
-        # Provide project defaults as means if such row exists
-        if "project" in df.index:
-            ws.loc["project"], we.loc["project"] = ws.mean(), we.mean()
+        inv_project = ws_mean * s_norm_project + we_mean * e_norm_project
 
-        df["INV"] = (ws * s_norm + we * e_norm).round(2)
-        return df
+        summary.loc["project_total"] = {
+            "land_use": "project",
+            "land_area": total_area,
+            "built_area": total_built,
+            "land_cost": total_land_cost,
+            "construction_cost": total_construction_cost,
+            "investment_need": total_investment_need,
+            "NPV": project_metrics.npv if project_metrics is not None else np.nan,
+            "IRR": project_metrics.irr if project_metrics is not None else np.nan,
+            "ROI": project_metrics.roi if project_metrics is not None else np.nan,
+            "PP_years": project_metrics.payback_years if project_metrics is not None else np.nan,
+            "EI": project_metrics.economic_index if project_metrics is not None else np.nan,
+            "spatial_potential": s_project,
+            "INV": round(inv_project, 2),
+        }
+
+        currency_columns = {"land_cost", "construction_cost", "investment_need", "NPV"}
+        numeric_cols = summary.select_dtypes(include=[np.number]).columns
+        for col in numeric_cols:
+            decimals = 2
+            summary[col] = self._round_clean(summary[col], decimals=decimals)
+            if col in currency_columns:
+                summary[col] = summary[col].astype(float)
+
+        round_specs: dict[str, int] = {
+            "land_cost": 2,
+            "construction_cost": 2,
+            "investment_need": 2,
+            "NPV": 2,
+            "INV": 2,
+            "spatial_potential": 2,
+            "land_area": 2,
+            "built_area": 2,
+            "IRR": 2,
+            "ROI": 2,
+            "PP_years": 2,
+            "EI": 2,
+        }
+        for col, decimals in round_specs.items():
+            if col in working.columns:
+                working[col] = self._round_clean(working[col], decimals=decimals)
+                if col in currency_columns:
+                    working[col] = working[col].astype(float)
+
+        working = working.drop(
+            columns=["ECON_NPV", "ECON_IRR", "ECON_ROI", "ECON_PP_years", "ECON_EI"],
+            errors="ignore",
+        )
+
+        summary_cols = [
+            "land_use",
+            "land_area",
+            "built_area",
+            "land_cost",
+            "construction_cost",
+            "investment_need",
+            "NPV",
+            "IRR",
+            "ROI",
+            "PP_years",
+            "EI",
+            "spatial_potential",
+            "INV",
+        ]
+        keep_cols = ["geometry"] + [col for col in summary_cols if col in working.columns]
+        working = working[keep_cols]
+        summary = summary[summary_cols]
+
+        return working, summary

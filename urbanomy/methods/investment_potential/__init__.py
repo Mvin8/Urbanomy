@@ -8,3 +8,4 @@ except PackageNotFoundError:  # при локальной разработке
 from .land_use_score import LandUseScoreAnalyzer
 from .investment_metrics import InvestmentAttractivenessAnalyzer
 from .constants import LAND_USE_TO_POTENTIAL_COLUMN
+from urbanomy.utils.investment_input import prepare_investment_input

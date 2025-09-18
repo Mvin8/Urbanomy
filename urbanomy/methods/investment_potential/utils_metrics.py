@@ -1,11 +1,31 @@
 import math
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Any, Dict, Iterable, List, Sequence, Tuple
+
 import numpy as np
 import pandas as pd
 
+NPV_LOGISTIC_SCALE: float = 1e8
+TARGET_IRR_FOR_EI: float = 0.30
 
-def npv(rate: float, cashflows: List[float]) -> float:
+
+def _is_positive_number(value: Any) -> bool:
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return False
+    return np.isfinite(numeric) and numeric > 0
+
+
+def _is_non_negative_number(value: Any) -> bool:
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return False
+    return np.isfinite(numeric) and numeric >= 0
+
+
+def npv(rate: float, cashflows: Sequence[float]) -> float:
     """
     Calculate the net present value of a series of cash flows.
 
@@ -21,14 +41,32 @@ def npv(rate: float, cashflows: List[float]) -> float:
     float
         Net present value.
     """
-    return sum(cf / (1 + rate) ** t for t, cf in enumerate(cashflows))
+    if not math.isfinite(rate):
+        raise ValueError("rate must be a finite number")
+    if rate <= -1.0:
+        raise ValueError("rate must be greater than -1 to compute NPV")
+
+    cf_values = [float(cf) for cf in cashflows]
+    if not cf_values:
+        return 0.0
+
+    total = cf_values[0]
+    if len(cf_values) == 1:
+        return total
+
+    step = 1.0 / (1.0 + rate)
+    discount_factor = 1.0
+    for cf in cf_values[1:]:
+        discount_factor *= step
+        total += cf * discount_factor
+    return total
 
 
 def irr(
-    cashflows: List[float],
+    cashflows: Sequence[float],
     guess: float = 0.1,
     tol: float = 1e-6,
-    max_iter: int = 100
+    max_iter: int = 100,
 ) -> float | None:
     """
     Compute the internal rate of return for a series of cash flows.
@@ -51,23 +89,101 @@ def irr(
     float or None
         Estimated IRR if converged within `max_iter`, otherwise `None`.
     """
+    cf_values = [float(cf) for cf in cashflows]
+    if len(cf_values) < 2 or not any(cf > 0 for cf in cf_values) or not any(cf < 0 for cf in cf_values):
+        return None
+
+    def npv_and_derivative(rate: float) -> Tuple[float, float]:
+        if not math.isfinite(rate) or rate <= -1.0:
+            raise ValueError("rate must be greater than -1 for IRR computation")
+        total = cf_values[0]
+        derivative = 0.0
+        if len(cf_values) == 1:
+            return total, derivative
+        step = 1.0 / (1.0 + rate)
+        discount_factor = 1.0
+        for t, cf in enumerate(cf_values[1:], start=1):
+            discount_factor *= step
+            total += cf * discount_factor
+            derivative -= t * cf * discount_factor * step
+        return total, derivative
+
+    # Attempt Newton-Raphson first for fast convergence
     rate = guess
     for _ in range(max_iter):
-        npv_ = npv(rate, cashflows)
-        deriv = sum(
-            -t * cf / (1 + rate) ** (t + 1)
-            for t, cf in enumerate(cashflows)
-        )
-        if deriv == 0:
+        try:
+            value, derivative = npv_and_derivative(rate)
+        except ValueError:
             break
-        new = rate - npv_ / deriv
-        if abs(new - rate) < tol:
-            return new
-        rate = new
+        if abs(value) < tol:
+            return rate
+        if abs(derivative) < 1e-12:
+            break
+        new_rate = rate - value / derivative
+        if not math.isfinite(new_rate) or new_rate <= -0.999999:
+            break
+        if abs(new_rate - rate) < tol:
+            return new_rate
+        rate = new_rate
+
+    # Fallback to bisection to guarantee convergence if IRR exists
+    def npv_only(r: float) -> float:
+        try:
+            return npv(r, cf_values)
+        except ValueError:
+            return math.copysign(math.inf, cf_values[0])
+
+    lower = -0.999999
+    upper = max(rate, 0.1)
+    value_lower = npv_only(lower)
+    value_upper = npv_only(upper)
+
+    if abs(value_lower) < tol:
+        return lower
+    if abs(value_upper) < tol:
+        return upper
+
+    def _sign(val: float) -> int:
+        if math.isnan(val):
+            return 0
+        if abs(val) < tol:
+            return 0
+        return 1 if val > 0 else -1
+
+    expansion_attempts = 0
+    while _sign(value_lower) == _sign(value_upper) and expansion_attempts < 60:
+        upper = upper * 2.0 + 1.0
+        value_upper = npv_only(upper)
+        expansion_attempts += 1
+        if not math.isfinite(value_upper):
+            break
+
+    if _sign(value_lower) == _sign(value_upper):
+        return None
+
+    for _ in range(200):
+        mid = (lower + upper) / 2.0
+        value_mid = npv_only(mid)
+        if not math.isfinite(value_mid):
+            return None
+        if abs(value_mid) < tol:
+            return mid
+        sign_mid = _sign(value_mid)
+        if sign_mid == 0:
+            return mid
+        if sign_mid == _sign(value_lower):
+            lower = mid
+            value_lower = value_mid
+        else:
+            upper = mid
+            value_upper = value_mid
+
+    if abs(value_mid) < 1e-4:
+        return mid
     return None
 
 
-def payback_period(rate: float, cashflows: List[float]) -> float | None:
+def payback_period(rate: float, cashflows: Sequence[float]) -> float | None:
     """
     Calculate the discounted payback period for cash flows.
 
@@ -87,9 +203,14 @@ def payback_period(rate: float, cashflows: List[float]) -> float | None:
         Discounted payback period in periods (may be fractional), or `None`
         if the investment is never recovered.
     """
+    if not math.isfinite(rate):
+        raise ValueError("rate must be a finite number")
+    if rate <= -1.0:
+        raise ValueError("rate must be greater than -1 to compute payback")
+
     cum = 0.0
     for t, cf in enumerate(cashflows):
-        discounted = cf / (1 + rate) ** t
+        discounted = float(cf) / (1 + rate) ** t
         prev = cum
         cum += discounted
         if cum >= 0:
@@ -160,31 +281,54 @@ def make_cashflow(
         If `profile` lacks both "price_sale" and "rent_annual".
     """
     # определяем фактическую площадь застройки (GFA)
-    if "built_area" in profile:
-        # если в бенчмарке задана built_area — берём её
-        gfa = profile["built_area"]
-    else:
-        # на всякий случай — fallback на старый вариант
-        density = profile.get("density", 0)
-        gfa = land_area * density
+    land_area = float(land_area)
+    if not np.isfinite(land_area) or land_area <= 0:
+        raise ValueError(f"Profile '{lu}' requires a positive land_area")
 
-    land_cost = land_area * profile.get("land_cost", 0)
-    build_cost = gfa * profile["cost_build"]
-    years_build = profile.get("construction_years", 2)
-    capex_per_year = build_cost / years_build
+    built_area_value = profile.get("built_area")
+    gfa = float(built_area_value) if _is_positive_number(built_area_value) else float("nan")
+    if not np.isfinite(gfa) or gfa <= 0:
+        density = profile.get("density")
+        if _is_positive_number(density):
+            gfa = land_area * float(density)
+    if not np.isfinite(gfa) or gfa <= 0:
+        gfa = max(land_area, 0.0)
+
+    cost_build_value = profile.get("cost_build", 0)
+    cost_build = float(cost_build_value) if _is_non_negative_number(cost_build_value) else 0.0
+
+    land_cost_raw = profile.get("land_cost", 0)
+    land_cost_per_area = float(land_cost_raw) if _is_non_negative_number(land_cost_raw) else 0.0
+    land_cost = land_area * land_cost_per_area
+
+    years_build_raw = profile.get("construction_years", 2)
+    years_build = int(years_build_raw) if _is_positive_number(years_build_raw) else 2
+
+    build_cost = gfa * cost_build
+    capex_per_year = build_cost / years_build if years_build else 0.0
 
     cf: List[float] = [-land_cost - capex_per_year] + [-capex_per_year] * (years_build - 1)
 
-    opex = profile.get("opex_rate", 0) * gfa
+    opex_rate_raw = profile.get("opex_rate", 0)
+    opex_rate = float(opex_rate_raw) if _is_non_negative_number(opex_rate_raw) else 0.0
+    opex = opex_rate * gfa
     if "price_sale" in profile:
-        yrs = profile.get("sale_years", 3)
-        rev_total = gfa * profile["price_sale"]
+        yrs_raw = profile.get("sale_years", 3)
+        yrs = int(yrs_raw) if _is_positive_number(yrs_raw) else 3
+        price_sale_raw = profile.get("price_sale", 0)
+        price_sale = float(price_sale_raw) if _is_non_negative_number(price_sale_raw) else 0.0
+        rev_total = gfa * price_sale
         rev_per_year = rev_total / yrs
         cf.extend(rev_per_year - opex for _ in range(yrs))
     elif "rent_annual" in profile:
-        yrs = profile.get("rent_years", 10)
-        occ = profile.get("occupancy", 0.9)
-        rev_per_year = gfa * profile["rent_annual"] * occ
+        yrs_raw = profile.get("rent_years", 10)
+        yrs = int(yrs_raw) if _is_positive_number(yrs_raw) else 10
+        share_raw = profile.get("rent_share", 1.0)
+        share = float(share_raw) if _is_non_negative_number(share_raw) else 1.0
+        share = max(0.0, min(1.0, share))
+        rent_annual_raw = profile.get("rent_annual", 0)
+        rent_annual = float(rent_annual_raw) if _is_non_negative_number(rent_annual_raw) else 0.0
+        rev_per_year = gfa * rent_annual * share
         cf.extend(rev_per_year - opex for _ in range(yrs))
     else:
         raise ValueError(f"Profile '{lu}' needs price_sale or rent_annual")
@@ -207,7 +351,12 @@ def nanminmax(values: Iterable[float]) -> Tuple[float, float]:
         Tuple `(min, max)` ignoring NaNs.
     """
     arr = np.array(list(values), dtype=float)
-    return float(np.nanmin(arr)), float(np.nanmax(arr))
+    if arr.size == 0:
+        return float("nan"), float("nan")
+    finite = arr[np.isfinite(arr)]
+    if finite.size == 0:
+        return float("nan"), float("nan")
+    return float(finite.min()), float(finite.max())
 
 
 def normalize_series(
@@ -240,51 +389,6 @@ def normalize_series(
     return pd.Series(0.0, index=ss.index)
 
 
-def scale_to_0_100(s: Sequence[float], src_min: float, src_max: float) -> pd.Series:
-    """
-    Linearly scale values from a known source range to 0..100.
-
-    Preserves index and clamps values to the source range before scaling.
-
-    Parameters
-    ----------
-    s : sequence of float
-        Input values.
-    src_min : float
-        Lower bound of the source scale.
-    src_max : float
-        Upper bound of the source scale.
-
-    Returns
-    -------
-    pandas.Series
-        Values scaled to [0, 100].
-    """
-    ss = pd.Series(s, dtype=float)
-    if src_max == src_min:
-        return pd.Series(0.0, index=ss.index)
-    ss = ss.clip(lower=src_min, upper=src_max)
-    return 100 * (ss - src_min) / (src_max - src_min)
-
-
-def to_numeric(series: pd.Series) -> pd.Series:
-    """
-    Coerce a pandas Series to numeric, stripping non-numeric characters.
-
-    Parameters
-    ----------
-    series : pandas.Series
-        Input series, may contain strings with units or symbols.
-
-    Returns
-    -------
-    pandas.Series
-        Numeric series with non-convertible elements set to NaN.
-    """
-    cleaned = series.astype(str).str.replace(r"[^0-9\.\-]+", "", regex=True)
-    return pd.to_numeric(cleaned, errors="coerce")
-
-
 def economic_index(
     npv_val: float | None,
     irr_val: float | None,
@@ -310,52 +414,22 @@ def economic_index(
         Economic index in [0, 100], rounded to four decimal places.
     """
     ei = 0.0
-    if npv_val is not None:
-        arg = -npv_val / 1e8
-        sig = (
-            0.0 if arg > 700 else
-            1.0 if arg < -700 else
-            1.0 / (1 + math.exp(arg))
-        )
-        ei += 50 * sig
-    if irr_val is not None:
-        ei += 50 * max(0.0, irr_val - rate) / (0.3 - rate)
+    if npv_val is not None and math.isfinite(npv_val):
+        arg = -npv_val / NPV_LOGISTIC_SCALE
+        if arg > 700:
+            sig = 0.0
+        elif arg < -700:
+            sig = 1.0
+        else:
+            sig = 1.0 / (1.0 + math.exp(arg))
+        npv_component = 50.0 * max(0.0, 2.0 * sig - 1.0)
+        ei += npv_component
+
+    if irr_val is not None and math.isfinite(irr_val):
+        if rate >= TARGET_IRR_FOR_EI:
+            irr_component = 50.0 if irr_val > rate else 0.0
+        else:
+            irr_component = 50.0 * max(0.0, irr_val - rate) / (TARGET_IRR_FOR_EI - rate)
+        ei += irr_component
+
     return round(min(max(ei, 0.0), 100.0), 4)
-
-
-def aggregate_project_cashflows(
-    rows: Iterable[dict],
-    benchmarks: Dict[str, Dict[str, Any]]
-) -> List[float]:
-    """
-    Aggregate cashflows from multiple rows into a single project cashflow series.
-
-    Parameters
-    ----------
-    rows : iterable of dict
-        Each dict must contain:
-        - "ip_type": land-use profile key (possibly prefixed with "ИП_").
-        - "area": numeric land area.
-    benchmarks : dict of dict
-        Profile-specific parameters for `make_cashflow`.
-
-    Returns
-    -------
-    list of float
-        Aggregated cash flow series summing individual cash flows by period.
-        Returns an empty list if no valid profiles are found.
-    """
-    all_cfs: List[List[float]] = []
-    for row in rows:
-        lu = row.get("ip_type", "").replace("ИП_", "")
-        if lu not in benchmarks:
-            continue
-        cf = make_cashflow(lu, float(row["area"]), benchmarks[lu])
-        all_cfs.append(cf)
-    if not all_cfs:
-        return []
-    max_len = max(len(cf) for cf in all_cfs)
-    return [
-        sum(cf[i] if i < len(cf) else 0.0 for cf in all_cfs)
-        for i in range(max_len)
-    ]

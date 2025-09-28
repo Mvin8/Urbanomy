@@ -12,7 +12,7 @@ class SEREstimator:
     # --- дефолтные параметры экспертных оценок ---
     _DEF = {
         'build_years': 3,
-        'tax_rates': {'pit': 0.13, 'cit': 0.17, 'prop': 0.02},
+        'tax_rates': {'pit': 0.13, 'cit': 0.17, 'prop': 0.02, 'land': 0.015},
         'va_coeff_build': {
             'BUSINESS': 0.50, 'RESIDENTIAL': 0.45, 'TRANSPORT': 0.55,
             'AGRICULTURE': 0.45, 'SPECIAL': 0.50, 'default': 0.50
@@ -94,17 +94,28 @@ class SEREstimator:
         T_build  = int(c.get('build_years', 1))
         pit = float(c['tax_rates'].get('pit', 0.13))
         cit = float(c['tax_rates'].get('cit', 0.17))
-        prop= float(c['tax_rates'].get('prop', 0.02))
+        prop = float(c['tax_rates'].get('prop', 0.02))
+        land_tax = float(c['tax_rates'].get('land', 0.0))
 
         d = df.copy()
-        for col in ['built_area','investment_need']:
-            d[col] = pd.to_numeric(d[col], errors='coerce').fillna(0.0)
+        numeric_cols = ['built_area', 'investment_need', 'land_cost', 'land_cost_before']
+        for col in numeric_cols:
+            if col in d.columns:
+                d[col] = pd.to_numeric(d[col], errors='coerce').fillna(0.0)
+        if 'land_cost' in d.columns and 'land_cost_before' not in d.columns:
+            # если старой цены нет, считаем её равной текущей
+            d['land_cost_before'] = d['land_cost']
         d['land_use'] = d['land_use'].astype(str)
 
-        g = d.groupby('land_use', dropna=False).agg(
-            I=('investment_need','sum'),
-            A=('built_area','sum')
-        ).reset_index()
+        agg_spec = {
+            'I': ('investment_need', 'sum'),
+            'A': ('built_area', 'sum')
+        }
+        if 'land_cost' in d.columns:
+            agg_spec['land_cost_after'] = ('land_cost', 'sum')
+        if 'land_cost_before' in d.columns:
+            agg_spec['land_cost_before'] = ('land_cost_before', 'sum')
+        g = d.groupby('land_use', dropna=False).agg(**agg_spec).reset_index()
 
         # 1) Δ инвестиции на душу (за период стройки)
         I_total = g['I'].sum()
@@ -139,7 +150,15 @@ class SEREstimator:
         FA_add = (g['I'] * g['cap_share']).sum()
         Property_tax_annual = FA_add * prop
 
+        land_tax_delta = 0.0
+        if land_tax and 'land_cost_after' in g.columns:
+            land_after_total = g['land_cost_after'].sum()
+            land_before_total = g['land_cost_before'].sum() if 'land_cost_before' in g.columns else 0.0
+            land_tax_delta = (land_after_total - land_before_total) * land_tax
+
         delta_budget_ops = PIT_ops_annual + CIT_ops_annual + Property_tax_annual
+        if land_tax_delta:
+            delta_budget_ops += land_tax_delta
 
         # 4) Δ Средняя зарплата — меняется в эксплуатации
         Jobs_new = g['jobs'].sum()
@@ -175,4 +194,3 @@ class SEREstimator:
             out[col] = out[col].map(self._fmt)
 
         return out
-

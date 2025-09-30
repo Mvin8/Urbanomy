@@ -2,51 +2,20 @@ import pandas as pd
 import numpy as np
 from typing import Dict, Any, Optional
 
+from .constants import DEFAULT_SER_PARAMETERS
+
 class SEREstimator:
     """Socio-economic results estimator with configurable defaults.
 
     The estimator evaluates project contribution deltas for five headline
     indicators during the construction and operational phases. Baseline
-    parameters (population, employment base, average wage base) must be
-    supplied, while all other knobs fall back to safe expert defaults that can
-    be overridden when needed.
+    parameters (population, employment base) must be supplied, while all other
+    knobs fall back to safe expert defaults—including ``avg_wage_base``—that
+    can be overridden when needed.
     """
 
     # --- дефолтные параметры экспертных оценок ---
-    _DEF = {
-        'build_years': 3,
-        'tax_rates': {'pit': 0.13, 'cit': 0.17, 'prop': 0.02, 'land': 0.015},
-        'va_coeff_build': {
-            'BUSINESS': 0.50, 'RESIDENTIAL': 0.45, 'TRANSPORT': 0.55,
-            'AGRICULTURE': 0.45, 'SPECIAL': 0.50, 'default': 0.50
-        },
-        'va_per_m2_ops': {
-            'BUSINESS': 12000.0, 'RESIDENTIAL': 2000.0, 'TRANSPORT': 5000.0,
-            'AGRICULTURE': 3000.0, 'SPECIAL': 7000.0, 'default': 0.0
-        },
-        'jobs_per_m2': {
-            'BUSINESS': 1/18, 'RESIDENTIAL': 0.0, 'TRANSPORT': 1/90,
-            'AGRICULTURE': 1/400, 'SPECIAL': 1/30, 'default': 0.0
-        },
-        'wage_by_use': {
-            'BUSINESS': 85_000, 'RESIDENTIAL': 0, 'TRANSPORT': 60_000,
-            'AGRICULTURE': 45_000, 'SPECIAL': 75_000, 'default': 0
-        },
-        'profit_share_ops': {
-            'BUSINESS': 0.18, 'TRANSPORT': 0.10, 'AGRICULTURE': 0.08,
-            'SPECIAL': 0.15, 'RESIDENTIAL': 0.00, 'default': 0.12
-        },
-        'capex_capitalizable_share': {
-            'BUSINESS': 0.95, 'RESIDENTIAL': 0.95, 'TRANSPORT': 0.90,
-            'AGRICULTURE': 0.90, 'SPECIAL': 0.95, 'default': 0.95
-        },
-        'amortization_rates': {
-            'BUSINESS': 0.03, 'RESIDENTIAL': 0.03, 'TRANSPORT': 0.06,
-            'AGRICULTURE': 0.05, 'SPECIAL': 0.04, 'default': 0.03
-        },
-        'build_wage_share': 0.25,
-        'build_profit_margin': 0.05
-    }
+    DEFAULT_PARAMETERS = DEFAULT_SER_PARAMETERS
 
     def __init__(self, params: Dict[str, Any]):
         """Create a new estimator with project-specific configuration.
@@ -54,28 +23,30 @@ class SEREstimator:
         Parameters
         ----------
         params : dict
-            Configuration dictionary. Must include the keys ``population``,
-            ``employment_base`` and ``avg_wage_base``. Any default stored in
-            ``_DEF`` can be overridden by providing the corresponding key
-            (nested dictionaries are merged recursively).
+            Configuration dictionary. Must include the keys ``population``
+            and ``employment_base``. Any default stored in
+            ``DEFAULT_SER_PARAMETERS`` (including ``avg_wage_base``) can be
+            overridden by providing the
+            corresponding key (nested dictionaries are merged recursively).
 
         Raises
         ------
         ValueError
             If any of the mandatory baseline keys are absent.
         """
-        need = ['population', 'employment_base', 'avg_wage_base']
+        need = ['population', 'employment_base']
         missing = [k for k in need if k not in params]
         if missing:
             raise ValueError(f"Отсутствуют параметры: {missing}")
         # слить дефолты и пользовательские параметры
-        cfg = {**self._DEF, **{k: v for k, v in params.items() if k in self._DEF or True}}
+        defaults = self.DEFAULT_PARAMETERS
+        cfg = {**defaults, **params}
         # вложенные словари ставок/коэффов тоже аккуратно слить
         for key in ['tax_rates','va_coeff_build','va_per_m2_ops','jobs_per_m2',
                     'wage_by_use','profit_share_ops','capex_capitalizable_share',
                     'amortization_rates']:
             if key in params and isinstance(params[key], dict):
-                cfg[key] = {**self._DEF.get(key, {}), **params[key]}
+                cfg[key] = {**defaults.get(key, {}), **params[key]}
         self.cfg = cfg
 
     @staticmethod

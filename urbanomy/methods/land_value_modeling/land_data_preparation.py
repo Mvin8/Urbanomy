@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from pathlib import Path
-from typing import Optional, Sequence, Union
+import io
+from typing import BinaryIO, Optional, Sequence, Union
 
 import geopandas as gpd
 import pandas as pd
@@ -14,8 +14,9 @@ from blocksnet.enums import LandUse
 from blocksnet.machine_learning.regression import DensityRegressor
 from blocksnet.relations import generate_adjacency_graph
 
-PathLike = Union[str, Path]
 DataFrameLike = Union[pd.DataFrame, gpd.GeoDataFrame]
+BlocksInput = Union[BinaryIO, DataFrameLike]
+AccessibilityInput = Union[BinaryIO, pd.DataFrame]
 
 
 class LandDataPreparator:
@@ -47,34 +48,36 @@ class LandDataPreparator:
 
     def __init__(
         self,
-        scenario_blocks_path: PathLike,
-        context_blocks_path: PathLike,
-        accessibility_matrix_path: PathLike,
+        scenario_blocks_source: BlocksInput,
+        context_blocks_source: BlocksInput,
+        accessibility_matrix_source: AccessibilityInput,
         *,
         adjacency_radius: float = 10.0,
         sqm_per_person: float = 20.0,
         output_columns: Optional[Sequence[str]] = None,
         log_level: str = 'WARNING',
     ) -> None:
-        self.scenario_blocks_path = Path(scenario_blocks_path)
-        self.context_blocks_path = Path(context_blocks_path)
-        self.accessibility_matrix_path = Path(accessibility_matrix_path)
+        self._scenario_source = scenario_blocks_source
+        self._context_source = context_blocks_source
+        self._accessibility_source = accessibility_matrix_source
         self.adjacency_radius = adjacency_radius
         self.sqm_per_person = sqm_per_person
         self.output_columns = list(output_columns) if output_columns else list(self.DEFAULT_OUTPUT_COLUMNS)
         self._density_regressor = DensityRegressor()
         self._accessibility_cache: Optional[pd.DataFrame] = None
+        self._last_prepared: Optional[gpd.GeoDataFrame] = None
         log_config.set_logger_level(log_level)
 
     def prepare(
         self,
-        scenario_blocks: Optional[DataFrameLike] = None,
-        context_blocks: Optional[DataFrameLike] = None,
-        accessibility_matrix: Optional[pd.DataFrame] = None,
-        save_path: Optional[PathLike] = None,
-    ) -> gpd.GeoDataFrame:
-        """Возвращает подготовленный GeoDataFrame и при необходимости сохраняет его в pickle."""
-        blocks = self._build_blocks(scenario_blocks, context_blocks)
+        scenario_blocks: Optional[BlocksInput] = None,
+        context_blocks: Optional[BlocksInput] = None,
+        accessibility_matrix: Optional[AccessibilityInput] = None,
+    ) -> io.BytesIO:
+        """Возвращает файл с подготовленным GeoDataFrame."""
+        scenario_source = scenario_blocks if scenario_blocks is not None else self._scenario_source
+        context_source = context_blocks if context_blocks is not None else self._context_source
+        blocks = self._build_blocks(scenario_source, context_source)
         self._clamp_land_use(blocks)
         adjacency_graph = generate_adjacency_graph(blocks, self.adjacency_radius)
         density_df = self._calculate_density(blocks, adjacency_graph)
@@ -83,19 +86,19 @@ class LandDataPreparator:
         self._append_accessibility(blocks, accessibility_matrix)
         prepared = self._cleanup(blocks)
         prepared['id'] = prepared.index
-        if save_path:
-            save_path = Path(save_path)
-            save_path.parent.mkdir(parents=True, exist_ok=True)
-            prepared.to_pickle(save_path)
-        return prepared
+        self._last_prepared = prepared.copy()
+        buffer = io.BytesIO()
+        prepared.to_pickle(buffer)
+        buffer.seek(0)
+        return buffer
 
     def _build_blocks(
         self,
-        scenario_blocks: Optional[DataFrameLike],
-        context_blocks: Optional[DataFrameLike],
+        scenario_source: BlocksInput,
+        context_source: BlocksInput,
     ) -> gpd.GeoDataFrame:
-        scenario = self._resolve_blocks_input(scenario_blocks, self.scenario_blocks_path)
-        context = self._resolve_blocks_input(context_blocks, self.context_blocks_path)
+        scenario = self._resolve_blocks_input(scenario_source)
+        context = self._resolve_blocks_input(context_source)
         blocks = pd.concat([scenario, context], ignore_index=True)
         blocks = gpd.GeoDataFrame(blocks, geometry=scenario.geometry.name, crs=scenario.crs)
         blocks['site_area'] = blocks.geometry.area
@@ -103,14 +106,26 @@ class LandDataPreparator:
 
     def _resolve_blocks_input(
         self,
-        data: Optional[DataFrameLike],
-        path: Path,
+        source: BlocksInput,
     ) -> gpd.GeoDataFrame:
-        if data is None:
-            loaded = pd.read_pickle(path)
-        else:
-            loaded = data
+        loaded = self._load_dataframe_from_source(source)
         return self._ensure_geodataframe(loaded)
+
+    @staticmethod
+    def _load_dataframe_from_source(source: BlocksInput) -> DataFrameLike:
+        if isinstance(source, (pd.DataFrame, gpd.GeoDataFrame)):
+            return source.copy()
+        if hasattr(source, 'read'):
+            binary_source = LandDataPreparator._reset_stream(source)
+            return pd.read_pickle(binary_source)
+        raise TypeError('Ожидался GeoDataFrame/DataFrame или бинарный поток с данными.')
+
+    @staticmethod
+    def _reset_stream(stream: BinaryIO) -> BinaryIO:
+        seek = getattr(stream, 'seek', None)
+        if callable(seek):
+            seek(0)
+        return stream
 
     @staticmethod
     def _ensure_geodataframe(data: DataFrameLike) -> gpd.GeoDataFrame:
@@ -150,16 +165,32 @@ class LandDataPreparator:
     def _append_accessibility(
         self,
         blocks: gpd.GeoDataFrame,
-        accessibility_matrix: Optional[pd.DataFrame],
+        accessibility_matrix: Optional[AccessibilityInput],
     ) -> None:
-        matrix = accessibility_matrix if accessibility_matrix is not None else self._load_accessibility_matrix()
+        matrix = (
+            self._resolve_accessibility_input(accessibility_matrix)
+            if accessibility_matrix is not None
+            else self._load_accessibility_matrix()
+        )
         area_acc = area_accessibility(matrix, blocks)
         blocks.loc[:, area_acc.columns] = area_acc
 
     def _load_accessibility_matrix(self) -> pd.DataFrame:
         if self._accessibility_cache is None:
-            self._accessibility_cache = pd.read_pickle(self.accessibility_matrix_path)
+            self._accessibility_cache = self._resolve_accessibility_input(self._accessibility_source)
         return self._accessibility_cache.copy()
+
+    @staticmethod
+    def _resolve_accessibility_input(source: AccessibilityInput) -> pd.DataFrame:
+        if isinstance(source, pd.DataFrame):
+            return source.copy()
+        if hasattr(source, 'read'):
+            binary_source = LandDataPreparator._reset_stream(source)
+            loaded = pd.read_pickle(binary_source)
+            if not isinstance(loaded, pd.DataFrame):
+                raise TypeError('Ожидался DataFrame доступности.')
+            return loaded
+        raise TypeError('Ожидался DataFrame или бинарный поток с матрицей доступности.')
 
     def _cleanup(self, blocks: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
         cleaned = blocks.copy()

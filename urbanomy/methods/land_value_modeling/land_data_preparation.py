@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import io
 from typing import BinaryIO, Optional, Sequence, Union
 
 import geopandas as gpd
@@ -73,8 +72,8 @@ class LandDataPreparator:
         scenario_blocks: Optional[BlocksInput] = None,
         context_blocks: Optional[BlocksInput] = None,
         accessibility_matrix: Optional[AccessibilityInput] = None,
-    ) -> io.BytesIO:
-        """Возвращает файл с подготовленным GeoDataFrame."""
+    ) -> gpd.GeoDataFrame:
+        """Возвращает подготовленный GeoDataFrame."""
         scenario_source = scenario_blocks if scenario_blocks is not None else self._scenario_source
         context_source = context_blocks if context_blocks is not None else self._context_source
         blocks = self._build_blocks(scenario_source, context_source)
@@ -87,10 +86,7 @@ class LandDataPreparator:
         prepared = self._cleanup(blocks)
         prepared['id'] = prepared.index
         self._last_prepared = prepared.copy()
-        buffer = io.BytesIO()
-        prepared.to_pickle(buffer)
-        buffer.seek(0)
-        return buffer
+        return prepared.copy()
 
     def _build_blocks(
         self,

@@ -3,10 +3,13 @@ import numpy as np
 from typing import Dict, Any, Optional
 
 class SEREstimator:
-    """
-    Минимальная модель СЭР: считает вклад проекта (дельты) по 5 показателям.
-    Нужны базовые параметры: population, employment_base, avg_wage_base.
-    Остальное имеет безопасные дефолты и может быть переопределено.
+    """Socio-economic results estimator with configurable defaults.
+
+    The estimator evaluates project contribution deltas for five headline
+    indicators during the construction and operational phases. Baseline
+    parameters (population, employment base, average wage base) must be
+    supplied, while all other knobs fall back to safe expert defaults that can
+    be overridden when needed.
     """
 
     # --- дефолтные параметры экспертных оценок ---
@@ -46,9 +49,20 @@ class SEREstimator:
     }
 
     def __init__(self, params: Dict[str, Any]):
-        """
-        Обязательные ключи: population, employment_base, avg_wage_base.
-        Любой дефолт из _DEF можно переопределить.
+        """Create a new estimator with project-specific configuration.
+
+        Parameters
+        ----------
+        params : dict
+            Configuration dictionary. Must include the keys ``population``,
+            ``employment_base`` and ``avg_wage_base``. Any default stored in
+            ``_DEF`` can be overridden by providing the corresponding key
+            (nested dictionaries are merged recursively).
+
+        Raises
+        ------
+        ValueError
+            If any of the mandatory baseline keys are absent.
         """
         need = ['population', 'employment_base', 'avg_wage_base']
         missing = [k for k in need if k not in params]
@@ -81,10 +95,22 @@ class SEREstimator:
             return f"{v:,.4f}".replace(",", " ")
 
     def compute(self, df: pd.DataFrame, pretty: bool = True) -> pd.DataFrame:
-        """
-        Возвращает DataFrame:
-        ['indicator','delta_build_year','delta_ops_year']
-        Только дельты по 5 показателям.
+        """Calculate socio-economic deltas for construction and operation.
+
+        Parameters
+        ----------
+        df : pandas.DataFrame
+            Project blocks with at least ``land_use``, ``built_area`` and
+            ``investment_need`` columns. Optional land valuation columns are
+            recognised when present.
+        pretty : bool, default ``True``
+            If ``True``, format numeric results as human-readable strings.
+
+        Returns
+        -------
+        pandas.DataFrame
+            Table with columns ``indicator``, ``delta_build_year`` and
+            ``delta_ops_year`` containing the five key metrics.
         """
         c = self.cfg
         P        = int(c['population'])
@@ -189,7 +215,6 @@ class SEREstimator:
         if not pretty:
             return out
 
-        # человекочитаемый формат чисел
         for col in ['delta_build_year','delta_ops_year']:
             out[col] = out[col].map(self._fmt)
 

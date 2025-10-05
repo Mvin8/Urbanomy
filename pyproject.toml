@@ -21,6 +21,7 @@ dependencies = [ # здесь необходимо вести все устан�
     "pandera",               
     "matplotlib",            
     "loguru",
+    "catboost",
     "libpysal"
 ]
 
@@ -31,7 +32,11 @@ classifiers = [ # метаданные для описания проекта п
     "Intended Audience :: Science/Research"
 ]
 
+[tool.setuptools.package-dir]
+"" = "src"
+
 [tool.setuptools.packages.find] # что включать в сборку при установке
+where = ["src"]
 include = ["urbanomy*"]
 
 

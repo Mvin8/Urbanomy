@@ -75,6 +75,24 @@ Land-value modelling
    price_map = estimator.predict()
    plot_land_price_maps(blocks_pred=price_map, scenario_blocks=scenario)
 
+.. figure:: docs/img/1_pricing_model.png
+   :alt: Training the land-price model with spatial lags
+   :width: 75%
+
+   Training the land-price model and generating spatial lag features
+
+.. figure:: docs/img/3_land_price_modeling_1.png
+   :alt: Price change map after scenario modification
+   :width: 75%
+
+   Price change map after applying the scenario
+
+.. figure:: docs/img/3_land_price_modeling_2.png
+   :alt: Comparing investments and prices for scenario and context blocks
+   :width: 75%
+
+   Comparing investments and prices for scenario and context blocks
+
 Investment attractiveness
 ~~~~~~~~~~~~~~~~~~~~~~~~~
 .. code-block:: python
@@ -104,11 +122,17 @@ Investment attractiveness
    analyzer = InvestmentAttractivenessAnalyzer(benchmarks=BENCHMARKS)
    enriched_blocks, project_summary = analyzer.calculate_investment_metrics(investment_ready)
 
+.. figure:: docs/img/investment_metrics.png
+   :alt: Investment metrics dashboard with INV index
+   :width: 75%
+
+   Investment metrics dashboard with the final INV index
+
 Socio-economic effects
 ~~~~~~~~~~~~~~~~~~~~~~
 .. code-block:: python
 
-   import pandas as pd
+   import pandas as gpd
    from urbanomy.methods.ser import SEREstimator
 
    ser = SEREstimator(
@@ -119,7 +143,7 @@ Socio-economic effects
        }
    )
 
-   project_blocks = pd.read_csv("data/project_cashflows.csv")
+   project_blocks = gpd.read_file('./data/test/blocks_investment.geojson')
    ser_table = ser.compute(project_blocks)
    print(ser_table)
 
@@ -127,11 +151,11 @@ Datasets and notebooks
 ----------------------
 Reproducible pipelines live in ``examples/``:
 
-- ``examples/land_value_modeling/1_pricing_model_training.ipynb`` – model training workflow.
-- ``examples/land_value_modeling/2_land_data_preparation.ipynb`` – block feature engineering.
-- ``examples/land_value_modeling/3_land_price_modeling.ipynb`` – scenario pricing walkthrough.
-- ``examples/investment_metrics.ipynb`` – investment attractiveness dashboard.
-- ``examples/socio_economic_indicators.ipynb`` – socio-economic reporting.
+- `examples/land_value_modeling/1_pricing_model_training.ipynb <examples/land_value_modeling/1_pricing_model_training.ipynb>`_ – model training workflow.
+- `examples/land_value_modeling/2_land_data_preparation.ipynb <examples/land_value_modeling/2_land_data_preparation.ipynb>`_ – block feature engineering.
+- `examples/land_value_modeling/3_land_price_modeling.ipynb <examples/land_value_modeling/3_land_price_modeling.ipynb>`_ – scenario pricing walkthrough.
+- `examples/investment_metrics.ipynb <examples/investment_metrics.ipynb>`_ – investment attractiveness dashboard.
+- `examples/socio_economic_indicators.ipynb <examples/socio_economic_indicators.ipynb>`_ – socio-economic reporting.
 
 Documentation
 -------------

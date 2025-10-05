@@ -7,7 +7,7 @@ name = "urbanomy" # название вашего проекта
 version = "0.0.1"
 authors = [
     { name = "Maksim Natykin", email = "mvin@itmo.ru" }
-] # не забудьте поменять на свое имя :)
+] # не забудьте поменять на свое имя 
 description = "IDU research package boilerplate"
 readme = "README.rst"
 requires-python = ">=3.10,<3.11"
@@ -16,6 +16,7 @@ license = { file = "LICENCE" }
 dependencies = [ # здесь необходимо вести все устанавливаемые зависимости: пакеты, которые необходимы для адекватной работы вашей библиотеки
     "blocksnet[full,ipynb]==1.0.0.a1",
     "geopandas>=1.0.0,<2.0.0",
+    "shapely",
     "pandas>=2.2.3",         
     "numpy",                 
     "pandera",               

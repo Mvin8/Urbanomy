@@ -1,4 +1,4 @@
-Urbanomy: Investment Attractiveness Analysis for Land-Use
+Urbanomy
 =========================================================
 .. logo-start
 
@@ -17,11 +17,11 @@ Urbanomy is a research toolkit from the Institute of Design and Urban Studies (I
 
 Highlights
 ----------
-- **Land-value modelling** – build spatial lag features, estimate land prices, and visualise impacts with pre-trained CatBoost models (``urbanomy.methods.land_value_modeling``).
-- **Scenario planning** – modify individual blocks, recompute indicators, and plot price deltas for what-if cases.
-- **Investment attractiveness** – aggregate cashflows, NPV/IRR/ROI metrics, and weighted spatial potential into a combined INV score (``urbanomy.methods.investment_potential``).
-- **Socio-economic footprint** – quantify fiscal and employment effects during construction and operation phases with ``SEREstimator`` (``urbanomy.methods.ser``).
-- **Robust data validation** – Pandera-based schemas for tabular and GeoDataFrame inputs (``urbanomy.utils``).
+- **Land-value modelling** – build spatial lag features, estimate land prices, and visualise impacts with pre-trained CatBoost models (`urbanomy.methods.land_value_modeling <src/urbanomy/methods/land_value_modeling>`_).
+- **Scenario planning** – modify individual blocks, recompute indicators, and plot price deltas for what-if cases (`urbanomy.methods.land_value_modeling.scenario_modification <src/urbanomy/methods/land_value_modeling/scenario_modification.py>`_).
+- **Investment attractiveness** – aggregate cashflows, NPV/IRR/ROI metrics, and weighted spatial potential into a combined INV score (`urbanomy.methods.investment_potential <src/urbanomy/methods/investment_potential>`_).
+- **Socio-economic footprint** – quantify fiscal and employment effects during construction and operation phases with `SEREstimator <src/urbanomy/methods/ser/ser_calculate.py>`_.
+- **Robust data validation** – Pandera-based schemas for tabular and GeoDataFrame inputs (`urbanomy.utils <src/urbanomy/utils>`_).
 
 Installation
 ------------

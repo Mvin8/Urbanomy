@@ -140,9 +140,19 @@ def plot_scenario_impact(
     Returns
     -------
     dict
-        Dictionary containing ``'map'`` with the clipped GeoDataFrame,
-        ``'fig'`` with the Matplotlib figure, and ``'summary'`` with aggregate
-        statistics.
+        Dictionary with the following keys:
+
+        ``'map'``
+            GeoDataFrame containing only blocks whose absolute price change
+            exceeds ``eps`` within the buffer.
+        ``'map_all'``
+            GeoDataFrame with all buffered blocks (including unchanged ones).
+        ``'fig'``
+            Matplotlib figure with the visualisation of the scenario impact.
+        ``'summary'``
+            Aggregated statistics for the blocks included in ``'map'``.
+        ``'summary_all'``
+            Aggregated statistics for all buffered blocks.
     """
 
     features = tuple(orig_features) if orig_features is not None else ORIGINAL_FEATURES
@@ -197,11 +207,25 @@ def plot_scenario_impact(
         show=show,
     )
 
-    summary = _summarise_changes(clipped)
-    if print_summary:
-        _print_summary(clipped, summary)
+    summary_all = _summarise_changes(clipped)
+    summary_changed = _summarise_changes(changed)
 
-    return {"map": clipped, "fig": fig, "summary": summary}
+    if print_summary:
+        _print_summary(
+            changed,
+            summary_changed,
+            eps=eps,
+            total_summary=summary_all,
+            total_count=int(len(clipped)),
+        )
+
+    return {
+        "map": changed if len(changed) else clipped.iloc[0:0].copy(),
+        "map_all": clipped,
+        "fig": fig,
+        "summary": summary_changed,
+        "summary_all": summary_all,
+    }
 
 
 def _build_buffer(blocks: GeoDataFrame, target_idx: int, radius_m: float) -> GeoDataFrame:
@@ -294,21 +318,42 @@ def _summarise_changes(gdf: GeoDataFrame) -> Dict[str, float]:
     }
 
 
-def _print_summary(gdf: GeoDataFrame, summary: Dict[str, float]) -> None:
-    print("\nСтатистика по кварталам в пределах буфера:")
-    print("index | до (₽) → после (₽) | Δ₽ | Δ%")
-    for idx, row in gdf.iterrows():
-        print(
-            f"{idx} | {_fmt_rub(row['price_before'])} → {_fmt_rub(row['price_after'])} | "
-            f"{_fmt_rub(row['d_rub'], signed=True)} | {_fmt_pct(row['d_pct'])}"
-        )
+def _print_summary(
+    gdf: GeoDataFrame,
+    summary: Dict[str, float],
+    *,
+    eps: float,
+    total_summary: Dict[str, float] | None = None,
+    total_count: int | None = None,
+) -> None:
+    threshold_note = f" (|Δ₽| > {eps:g})" if eps > 0 else ""
+    print(f"\nСтатистика по кварталам в пределах буфера{threshold_note}:")
+    if len(gdf):
+        print("index | до (₽) → после (₽) | Δ₽ | Δ%")
+        for idx, row in gdf.iterrows():
+            print(
+                f"{idx} | {_fmt_rub(row['price_before'])} → {_fmt_rub(row['price_after'])} | "
+                f"{_fmt_rub(row['d_rub'], signed=True)} | {_fmt_pct(row['d_pct'])}"
+            )
+    else:
+        print("Нет кварталов, у которых стоимость изменилась выше порога.")
 
-    print("\nСводка по буферу:")
+    print("\nСводка по кварталам с изменениями:")
     print(" • Сумма до:   ", _fmt_rub(summary["sum_before"]))
     print(" • Сумма после:", _fmt_rub(summary["sum_after"]))
     print(" • Изм., ₽:    ", _fmt_rub(summary["delta"], signed=True))
     print(" • Изм., %:    ", _fmt_pct(summary["delta_pct"]))
     print(" • Территорий: ", summary["count"])
+
+    if total_summary is not None:
+        print("\nСводка по буферу (все кварталы):")
+        print(" • Сумма до:   ", _fmt_rub(total_summary["sum_before"]))
+        print(" • Сумма после:", _fmt_rub(total_summary["sum_after"]))
+        print(" • Изм., ₽:    ", _fmt_rub(total_summary["delta"], signed=True))
+        print(" • Изм., %:    ", _fmt_pct(total_summary["delta_pct"]))
+        count = total_count if total_count is not None else total_summary.get("count")
+        if count is not None:
+            print(" • Территорий: ", count)
 
 
 def _fmt_rub(value: float, *, signed: bool = False, digits: int = 0) -> str:

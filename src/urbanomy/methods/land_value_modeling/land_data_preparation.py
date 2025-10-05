@@ -13,6 +13,8 @@ from blocksnet.enums import LandUse
 from blocksnet.machine_learning.regression import DensityRegressor
 from blocksnet.relations import generate_adjacency_graph
 
+from . import constants as _constants
+
 DataFrameLike = Union[pd.DataFrame, gpd.GeoDataFrame]
 BlocksInput = Union[BinaryIO, DataFrameLike]
 AccessibilityInput = Union[BinaryIO, pd.DataFrame]
@@ -21,29 +23,7 @@ AccessibilityInput = Union[BinaryIO, pd.DataFrame]
 class LandDataPreparator:
     """Подготовка данных геоблоков в переиспользуемый интерфейс."""
 
-    DEFAULT_OUTPUT_COLUMNS: Sequence[str] = (
-        'residential',
-        'business',
-        'recreation',
-        'industrial',
-        'transport',
-        'special',
-        'agriculture',
-        'land_use',
-        'share',
-        'footprint_area',
-        'build_floor_area',
-        'living_area',
-        'non_living_area',
-        'population',
-        'site_area',
-        'fsi',
-        'gsi',
-        'mxi',
-        'l',
-        'morphotype',
-        'area_accessibility',
-    )
+    DEFAULT_OUTPUT_COLUMNS: Sequence[str] = _constants.DEFAULT_OUTPUT_COLUMNS
 
     def __init__(
         self,
@@ -51,8 +31,8 @@ class LandDataPreparator:
         context_blocks_source: BlocksInput,
         accessibility_matrix_source: AccessibilityInput,
         *,
-        adjacency_radius: float = 10.0,
-        sqm_per_person: float = 20.0,
+        adjacency_radius: float = _constants.DEFAULT_ADJACENCY_RADIUS,
+        sqm_per_person: float = _constants.DEFAULT_SQM_PER_PERSON,
         output_columns: Optional[Sequence[str]] = None,
         log_level: str = 'WARNING',
     ) -> None:

@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import BinaryIO, Optional, Sequence, Union
 
 import geopandas as gpd
+import numpy as np
 import pandas as pd
 
 from blocksnet.analysis.accessibility import area_accessibility
@@ -75,9 +76,12 @@ class LandDataPreparator:
     ) -> gpd.GeoDataFrame:
         scenario = self._resolve_blocks_input(scenario_source)
         context = self._resolve_blocks_input(context_source)
+        if scenario.crs and context.crs and scenario.crs != context.crs:
+            context = context.to_crs(scenario.crs)
         blocks = pd.concat([scenario, context], ignore_index=True)
         blocks = gpd.GeoDataFrame(blocks, geometry=scenario.geometry.name, crs=scenario.crs)
         blocks['site_area'] = blocks.geometry.area
+        blocks['is_scn'] = LandDataPreparator.mark_scenario_blocks(blocks, scenario)
         return blocks
 
     def _resolve_blocks_input(
@@ -111,6 +115,27 @@ class LandDataPreparator:
             raise ValueError("Переданный DataFrame должен содержать колонку 'geometry'.")
         crs = getattr(data, 'crs', None)
         return gpd.GeoDataFrame(data.copy(), geometry='geometry', crs=crs)
+
+    @staticmethod
+    def mark_scenario_blocks(
+        blocks: gpd.GeoDataFrame,
+        scenario: gpd.GeoDataFrame,
+    ) -> np.ndarray:
+        if scenario.empty:
+            return np.zeros(len(blocks), dtype=bool)
+
+        scenario_geometry = scenario[['geometry']]
+        if scenario_geometry.crs != blocks.crs:
+            scenario_geometry = scenario_geometry.to_crs(blocks.crs)
+
+        joined = gpd.sjoin(
+            blocks[['geometry']].reset_index().rename(columns={'index': '_idx'}),
+            scenario_geometry,
+            how='inner',
+            predicate='intersects',
+        )
+        scenario_indices = joined['_idx'].unique()
+        return blocks.index.isin(scenario_indices)
 
     def _clamp_land_use(self, blocks: gpd.GeoDataFrame) -> None:
         for land_use in LandUse:
@@ -182,5 +207,7 @@ class LandDataPreparator:
             )
         geom_col = cleaned.geometry.name
         keep_cols = [col for col in self.output_columns if col in cleaned.columns]
+        if 'is_scn' in cleaned.columns and 'is_scn' not in keep_cols:
+            keep_cols.append('is_scn')
         ordered_cols = keep_cols + ([geom_col] if geom_col not in keep_cols else [])
         return cleaned[ordered_cols].copy()

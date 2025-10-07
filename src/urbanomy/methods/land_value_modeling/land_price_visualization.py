@@ -10,6 +10,8 @@ import matplotlib.ticker as mticker
 import numpy as np
 from geopandas import GeoDataFrame
 
+from .land_data_preparation import LandDataPreparator
+
 
 def plot_land_price_maps(
     *,
@@ -80,7 +82,7 @@ def plot_land_price_maps(
         scenario = scenario.to_crs(blocks.crs)
 
     if "is_scn" not in blocks.columns:
-        blocks["is_scn"] = _mark_scenario_blocks(blocks, scenario)
+        blocks["is_scn"] = LandDataPreparator.mark_scenario_blocks(blocks, scenario)
 
     scenario_subset = blocks[blocks["is_scn"]].copy()
     context_subset = blocks[~blocks["is_scn"]].copy()
@@ -102,25 +104,11 @@ def plot_land_price_maps(
         scenario=scenario_subset,
         context=context_clipped,
         price_column="price_per_sotka",
-        quantile_bounds=(0.02, 0.98),
+        quantile_bounds=(0.05, 0.95),
         show=show,
     )
 
     return {"totals": totals, "figures": figures}
-
-
-def _mark_scenario_blocks(blocks: GeoDataFrame, scenario: GeoDataFrame) -> np.ndarray:
-    if scenario.empty:
-        return np.zeros(len(blocks), dtype=bool)
-
-    joined = gpd.sjoin(
-        blocks[["geometry"]].reset_index().rename(columns={"index": "_idx"}),
-        scenario[["geometry"]],
-        how="inner",
-        predicate="intersects",
-    )
-    scenario_indices = joined["_idx"].unique()
-    return blocks.index.isin(scenario_indices)
 
 
 def _make_buffer_m(scenario: GeoDataFrame, radius_m: float, *, target_crs) -> GeoDataFrame:

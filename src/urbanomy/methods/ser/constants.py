@@ -2,7 +2,7 @@
 
 DEFAULT_SER_PARAMETERS = {
     'build_years': 3,
-    'avg_wage_base': 82_430,
+    'avg_wage_base': 70_430,
     'tax_rates': {'pit': 0.13, 'cit': 0.17, 'prop': 0.02, 'land': 0.015},
     'va_coeff_build': {
         'BUSINESS': 0.50, 'RESIDENTIAL': 0.45, 'TRANSPORT': 0.55,

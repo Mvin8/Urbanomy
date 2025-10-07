@@ -113,7 +113,7 @@ INVESTMENT_WEIGHTS = {
 
 
 DEFAULT_ECON_METRIC: str       = "EI"
-DEFAULT_DISCOUNT_RATE: float   = 0.12
+DEFAULT_DISCOUNT_RATE: float   = 0.18
 DEFAULT_AREA_COL: str          = "Площадь территории"
 DEFAULT_IP_TYPE: str           = "ip_type"
 DEFAULT_IP_VALUE: str          = "ip_value"

@@ -216,7 +216,7 @@ def _prepare_with_base(
 
 def prepare_investment_input(
     gdf: gpd.GeoDataFrame,
-    base_gdf: gpd.GeoDataFrame | pd.DataFrame | None = None,
+    project_potential: gpd.GeoDataFrame | pd.DataFrame | None = None,
     *,
     keep_columns: Sequence[str] | None = None,
     allowed_uses: Iterable[str] | None = None,
@@ -239,8 +239,8 @@ def prepare_investment_input(
     """
 
     polygon_gdf = _ensure_geodataframe(gdf)
-    if base_gdf is not None:
-        base_ready = _ensure_geodataframe(base_gdf)
+    if project_potential is not None:
+        base_ready = _ensure_geodataframe(project_potential)
         polygon_gdf = _prepare_with_base(
             polygon_gdf,
             base_ready,

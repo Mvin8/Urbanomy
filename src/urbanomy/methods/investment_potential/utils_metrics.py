@@ -10,6 +10,19 @@ TARGET_IRR_FOR_EI: float = 0.30
 
 
 def _is_positive_number(value: Any) -> bool:
+    """Return True when the input is a finite number greater than zero.
+
+    Parameters
+    ----------
+    value : Any
+        Value to test for a positive numeric representation.
+
+    Returns
+    -------
+    bool
+        ``True`` if ``value`` can be converted to ``float`` and is strictly
+        positive; otherwise ``False``.
+    """
     try:
         numeric = float(value)
     except (TypeError, ValueError):
@@ -18,6 +31,19 @@ def _is_positive_number(value: Any) -> bool:
 
 
 def _is_non_negative_number(value: Any) -> bool:
+    """Return True when the input is a finite number greater than or equal to zero.
+
+    Parameters
+    ----------
+    value : Any
+        Value to test for a non-negative numeric representation.
+
+    Returns
+    -------
+    bool
+        ``True`` if ``value`` can be converted to ``float`` and is not less than
+        zero; otherwise ``False``.
+    """
     try:
         numeric = float(value)
     except (TypeError, ValueError):
@@ -280,7 +306,7 @@ def make_cashflow(
     ValueError
         If `profile` lacks both "price_sale" and "rent_annual".
     """
-    # определяем фактическую площадь застройки (GFA)
+    # Determine the effective gross floor area (GFA).
     land_area = float(land_area)
     if not np.isfinite(land_area) or land_area <= 0:
         raise ValueError(f"Profile '{lu}' requires a positive land_area")
@@ -365,7 +391,7 @@ def normalize_series(
     vmax: float
 ) -> pd.Series:
     """
-    Normalize a sequence of values to a 0–100 scale.
+    Normalize a sequence of values to a 0-100 scale.
 
     Parameters
     ----------

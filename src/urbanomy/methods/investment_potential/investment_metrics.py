@@ -48,6 +48,21 @@ class InvestmentMetricsResult:
         cashflow: Sequence[float],
         discount_rate: float,
     ) -> "InvestmentMetricsResult":
+        """Create an instance from a cash-flow sequence.
+
+        Parameters
+        ----------
+        cashflow : Sequence[float]
+            Ordered cash-flow values per period, including the initial
+            investment.
+        discount_rate : float
+            Discount rate per period expressed as a decimal fraction.
+
+        Returns
+        -------
+        InvestmentMetricsResult
+            New instance populated with derived financial indicators.
+        """
         cashflow = list(cashflow or [])
 
         raw_npv = npv(discount_rate, cashflow)
@@ -114,6 +129,7 @@ class NormalizedMetricRange:
 
     @property
     def has_valid(self) -> bool:
+        """Return True when at least one finite value is present."""
         return bool(self.values.notna().any())
 
 
@@ -127,6 +143,22 @@ class InvestmentAttractivenessAnalyzer:
         econ_metric: str = DEFAULT_ECON_METRIC,
         discount_rate: float | None = None,
     ) -> None:
+        """Initialise the analyzer with reference profiles and weights.
+
+        Parameters
+        ----------
+        benchmarks : dict[str, dict[str, Any]]
+            Mapping from land-use codes to benchmark profiles describing
+            profitability assumptions (densities, prices, etc.).
+        weights_dict : dict[str, tuple[float, float]] or None, optional
+            Optional override for spatial/economic weights per land-use key.
+            Defaults to ``INVESTMENT_WEIGHTS`` when omitted.
+        econ_metric : str, optional
+            Economic metric to emphasise when normalising (``"EI"`` by default).
+        discount_rate : float or None, optional
+            Discount rate used when the benchmark profile does not specify one.
+            If ``None``, ``DEFAULT_DISCOUNT_RATE`` is used.
+        """
         self.benchmarks = benchmarks
         self.weights = weights_dict or INVESTMENT_WEIGHTS
         self.metric = econ_metric.upper()
@@ -134,6 +166,18 @@ class InvestmentAttractivenessAnalyzer:
 
     @staticmethod
     def _to_float(value: Any) -> float:
+        """Convert arbitrary input to ``float`` returning ``nan`` on failure.
+
+        Parameters
+        ----------
+        value : Any
+            Value to convert.
+
+        Returns
+        -------
+        float
+            Converted float or ``nan`` if conversion fails.
+        """
         try:
             return float(value)
         except (TypeError, ValueError):
@@ -141,6 +185,20 @@ class InvestmentAttractivenessAnalyzer:
 
     @staticmethod
     def _round_clean(values: pd.Series | np.ndarray, decimals: int = 2) -> pd.Series:
+        """Round numerical data and suppress near-zero artefacts.
+
+        Parameters
+        ----------
+        values : pandas.Series or numpy.ndarray
+            Values to round.
+        decimals : int, optional
+            Number of decimal places (default is ``2``).
+
+        Returns
+        -------
+        pandas.Series
+            Rounded values with tiny numbers coerced to ``0.0``.
+        """
         serie = pd.Series(values, copy=True, dtype=float)
         serie = serie.round(decimals)
         tol = 10 ** (-decimals)
@@ -149,11 +207,39 @@ class InvestmentAttractivenessAnalyzer:
 
     @staticmethod
     def _coerce_numeric_columns(gdf: pd.DataFrame, columns: Sequence[str]) -> None:
+        """Cast selected DataFrame columns to numeric values in-place.
+
+        Parameters
+        ----------
+        gdf : pandas.DataFrame
+            DataFrame whose columns are to be converted.
+        columns : Sequence[str]
+            Column names that should contain numeric data.
+        """
         for col in columns:
             if col in gdf.columns:
                 gdf[col] = pd.to_numeric(gdf[col], errors="coerce")
 
     def _prepare_profile(self, row: pd.Series, base_profile: dict[str, Any]) -> PreparedProfile:
+        """Combine a row with a benchmark profile for cash-flow modelling.
+
+        Parameters
+        ----------
+        row : pandas.Series
+            Row with polygon attributes including geometry, areas and costs.
+        base_profile : dict[str, Any]
+            Benchmark parameters for the polygon's land-use type.
+
+        Returns
+        -------
+        PreparedProfile
+            Structured values ready for cash-flow generation.
+
+        Raises
+        ------
+        ValueError
+            If a valid land area cannot be derived from inputs.
+        """
         params = dict(base_profile or {})
 
         land_area = self._to_float(row.get("site_area"))
@@ -200,6 +286,25 @@ class InvestmentAttractivenessAnalyzer:
         )
 
     def _calculate_row_metrics(self, idx: Any, row: pd.Series) -> RowComputation:
+        """Evaluate investment metrics for a single polygon row.
+
+        Parameters
+        ----------
+        idx : Any
+            Index label of the polygon.
+        row : pandas.Series
+            Polygon attributes enriched by prepared investment input.
+
+        Returns
+        -------
+        RowComputation
+            Computed metrics plus intermediate values for the polygon.
+
+        Raises
+        ------
+        KeyError
+            If the polygon's land-use lacks benchmark configuration.
+        """
         land_use = str(row.get("land_use"))
         if land_use not in self.benchmarks:
             raise KeyError(f"No benchmark settings for land_use='{land_use}'")
@@ -236,6 +341,18 @@ class InvestmentAttractivenessAnalyzer:
         )
 
     def _normalize_spatial_metric(self, price_series: pd.Series) -> NormalizedMetricRange:
+        """Normalise land price proxies onto a 0-100 scale.
+
+        Parameters
+        ----------
+        price_series : pandas.Series
+            Series of land-price proxies for each polygon.
+
+        Returns
+        -------
+        NormalizedMetricRange
+            Original values, normalised scores, and their min/max bounds.
+        """
         if price_series.notna().any():
             s_min, s_max = nanminmax(price_series[price_series.notna()])
             normalized = normalize_series(price_series.fillna(s_min), s_min, s_max).clip(0, 100)
@@ -245,6 +362,18 @@ class InvestmentAttractivenessAnalyzer:
         return NormalizedMetricRange(price_series, normalized, s_min, s_max)
 
     def _normalize_economic_metric(self, series: pd.Series) -> NormalizedMetricRange:
+        """Normalise economic indicator values consistent with ``self.metric``.
+
+        Parameters
+        ----------
+        series : pandas.Series
+            Economic metric values for each polygon.
+
+        Returns
+        -------
+        NormalizedMetricRange
+            Original values, normalised scores, and computed bounds.
+        """
         if self.metric == "EI":
             normalized = series.clip(lower=0, upper=100).fillna(0.0)
             return NormalizedMetricRange(series, normalized, float("nan"), float("nan"))
@@ -263,6 +392,18 @@ class InvestmentAttractivenessAnalyzer:
 
     @staticmethod
     def _aggregate_cashflows(cashflows: Sequence[Sequence[float]]) -> list[float]:
+        """Aggregate multiple cash-flow sequences period by period.
+
+        Parameters
+        ----------
+        cashflows : sequence of sequence of float
+            Cash-flow lists aligned per polygon.
+
+        Returns
+        -------
+        list[float]
+            Aggregate cash flow summing each period across sequences.
+        """
         sequences = [list(cf) for cf in cashflows if cf]
         if not sequences:
             return []
@@ -275,6 +416,18 @@ class InvestmentAttractivenessAnalyzer:
     def _resolve_weights(
         self, land_use_series: pd.Series
     ) -> tuple[pd.Series, pd.Series, float, float]:
+        """Map land-use categories to spatial/economic weights.
+
+        Parameters
+        ----------
+        land_use_series : pandas.Series
+            Series of land-use labels per polygon.
+
+        Returns
+        -------
+        tuple[pandas.Series, pandas.Series, float, float]
+            Spatial weights, economic weights, and their respective means.
+        """
         spatial_lookup = {lu: weights[0] for lu, weights in self.weights.items()}
         economic_lookup = {lu: weights[1] for lu, weights in self.weights.items()}
         ws_mean = float(np.mean(list(spatial_lookup.values()))) if spatial_lookup else 0.5
@@ -287,6 +440,24 @@ class InvestmentAttractivenessAnalyzer:
         self,
         gdf: gpd.GeoDataFrame,
     ) -> tuple[gpd.GeoDataFrame, pd.DataFrame]:
+        """Compute investment metrics and summary tables for polygons.
+
+        Parameters
+        ----------
+        gdf : geopandas.GeoDataFrame
+            Input dataset prepared with ``prepare_investment_input`` columns.
+
+        Returns
+        -------
+        tuple[geopandas.GeoDataFrame, pandas.DataFrame]
+            Tuple of per-polygon metrics (GeoDataFrame) and aggregated summary
+            table (DataFrame). Returns empty structures if ``gdf`` is empty.
+
+        Raises
+        ------
+        ValueError
+            If the requested economic metric is missing from the prepared data.
+        """
         if gdf.empty:
             return gdf.copy(), pd.DataFrame()
 

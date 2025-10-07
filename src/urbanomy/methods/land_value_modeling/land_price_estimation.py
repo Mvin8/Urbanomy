@@ -47,6 +47,23 @@ class LandPriceEstimator:
         orig_features: Sequence[str] | None = None,
         categorical_features: Sequence[str] | None = None,
     ) -> None:
+        """Initialise the estimator with model, data and feature configuration.
+
+        Parameters
+        ----------
+        model : object
+            Trained estimator exposing a ``predict`` method that accepts a
+            pandas DataFrame and returns logarithmic prices.
+        blocks : geopandas.GeoDataFrame
+            Dataset containing geometries and base features required by
+            ``orig_features``.
+        radius_list : Sequence[float], optional
+            Distance thresholds for spatial lag computation.
+        orig_features : Sequence[str], optional
+            Feature names supplied to the estimator.
+        categorical_features : Sequence[str], optional
+            Subset of features that should be treated as categorical.
+        """
         self.model = model
         self._blocks = blocks.copy()
         self._radii = tuple(radius_list) if radius_list is not None else tuple(self.DEFAULT_RADII)
@@ -82,6 +99,13 @@ class LandPriceEstimator:
         return blocks_pred
 
     def _build_distance_weights(self) -> Mapping[float, DistanceBand]:
+        """Construct distance-band spatial weights for each configured radius.
+
+        Returns
+        -------
+        Mapping[float, libpysal.weights.DistanceBand]
+            Dictionary mapping radius values to ``DistanceBand`` instances.
+        """
         weights = {}
         for radius in self._radii:
             weight = DistanceBand.from_dataframe(
@@ -95,6 +119,18 @@ class LandPriceEstimator:
         return weights
 
     def _design_matrix(self, blocks: gpd.GeoDataFrame) -> pd.DataFrame:
+        """Assemble the model design matrix including spatial lag features.
+
+        Parameters
+        ----------
+        blocks : geopandas.GeoDataFrame
+            Dataset for which predictions will be generated.
+
+        Returns
+        -------
+        pandas.DataFrame
+            Feature matrix aligned with ``blocks.index``.
+        """
         base = blocks[list(self._orig_features)].copy()
 
         for column in self._categorical_features:
@@ -105,6 +141,18 @@ class LandPriceEstimator:
         return pd.concat([base, lag_features], axis=1)
 
     def _compute_lag_features(self, blocks: gpd.GeoDataFrame) -> pd.DataFrame:
+        """Compute spatial lag features for numeric columns and neighbour counts.
+
+        Parameters
+        ----------
+        blocks : geopandas.GeoDataFrame
+            Dataset whose numeric columns are used to compute lags.
+
+        Returns
+        -------
+        pandas.DataFrame
+            Lag feature frame indexed by ``blocks.index``.
+        """
         lag_parts: list[pd.Series] = []
 
         if self._numeric_features:
@@ -133,6 +181,13 @@ class LandPriceEstimator:
         return pd.concat(lag_parts, axis=1)
 
     def _validate_inputs(self) -> None:
+        """Ensure that all required features are present in the blocks dataset.
+
+        Raises
+        ------
+        ValueError
+            If any of ``orig_features`` are missing from ``self._blocks``.
+        """
         missing_columns = [feature for feature in self._orig_features if feature not in self._blocks.columns]
         if missing_columns:
             raise ValueError(

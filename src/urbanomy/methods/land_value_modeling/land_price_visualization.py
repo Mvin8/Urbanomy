@@ -112,6 +112,22 @@ def plot_land_price_maps(
 
 
 def _make_buffer_m(scenario: GeoDataFrame, radius_m: float, *, target_crs) -> GeoDataFrame:
+    """Generate a buffer around the scenario footprint in metres.
+
+    Parameters
+    ----------
+    scenario : geopandas.GeoDataFrame
+        Scenario blocks whose union defines the buffer centre.
+    radius_m : float
+        Buffer radius in metres applied to the unified geometry.
+    target_crs : Any
+        Coordinate reference system for the returned geometry.
+
+    Returns
+    -------
+    geopandas.GeoDataFrame
+        Single-row GeoDataFrame representing the buffered scenario extent.
+    """
     if scenario.empty:
         return gpd.GeoDataFrame(geometry=[], crs=target_crs)
 
@@ -139,6 +155,28 @@ def _plot_maps(
     quantile_bounds: Tuple[float, float],
     show: bool,
 ) -> Tuple[plt.Figure, ...]:
+    """Create individual scenario, context, and combined price maps.
+
+    Parameters
+    ----------
+    blocks : geopandas.GeoDataFrame
+        Dataset containing price-per-sotka values.
+    scenario : geopandas.GeoDataFrame
+        Scenario subset used for highlighting.
+    context : geopandas.GeoDataFrame
+        Context blocks within the buffer.
+    price_column : str
+        Name of the column visualised via colour mapping.
+    quantile_bounds : tuple[float, float]
+        Lower and upper quantiles used to clamp the colour scale.
+    show : bool
+        Whether to display the figures via ``plt.show``.
+
+    Returns
+    -------
+    tuple[matplotlib.figure.Figure, ...]
+        Figures for scenario vs context, context-only, and combined views.
+    """
     figures = []
     vmin, vmax = _compute_color_bounds(blocks, price_column, quantile_bounds)
 
@@ -183,6 +221,22 @@ def _compute_color_bounds(
     price_column: str,
     quantile_bounds: Tuple[float, float],
 ) -> Tuple[float, float]:
+    """Derive robust colour scale bounds from price quantiles.
+
+    Parameters
+    ----------
+    blocks : geopandas.GeoDataFrame
+        Dataset providing the price distribution.
+    price_column : str
+        Column containing price values to evaluate.
+    quantile_bounds : tuple[float, float]
+        Lower and upper quantiles (0-1 range) used to compute bounds.
+
+    Returns
+    -------
+    tuple[float, float]
+        Minimum and maximum values for the colour scale.
+    """
     if len(blocks):
         low, high = quantile_bounds
         vmin = blocks[price_column].quantile(low)
@@ -194,6 +248,13 @@ def _compute_color_bounds(
 
 
 def _print_totals(totals: Dict[str, float]) -> None:
+    """Display aggregate scenario and context prices in the console.
+
+    Parameters
+    ----------
+    totals : dict[str, float]
+        Mapping containing ``scenario``, ``context``, and ``all`` totals.
+    """
     print("Суммарная стоимость:")
     print(" • Сценические кварталы:", _format_currency(totals["scenario"]))
     print(" • Контекст:", _format_currency(totals["context"]))
@@ -201,10 +262,29 @@ def _print_totals(totals: Dict[str, float]) -> None:
 
 
 def _format_currency(value: float) -> str:
+    """Return a formatted currency string with thin-space separators.
+
+    Parameters
+    ----------
+    value : float
+        Numeric value to format.
+
+    Returns
+    -------
+    str
+        Formatted currency string expressed in roubles.
+    """
     return f"{value:,.0f} ₽".replace(",", " ")
 
 
 def _format_colorbar(ax) -> None:
+    """Apply thousands separators to a Matplotlib colourbar axis.
+
+    Parameters
+    ----------
+    ax : matplotlib.axes.Axes
+        Colorbar axes receiving the formatter.
+    """
     formatter = mticker.FuncFormatter(lambda value, _: f"{int(value):,}".replace(",", " "))
     ax.yaxis.set_major_formatter(formatter)
 
@@ -219,6 +299,28 @@ def _plot_context_vs_scenario(
     title: str,
     show: bool,
 ) -> plt.Figure:
+    """Plot scenario blocks atop context blocks using a shared colour scale.
+
+    Parameters
+    ----------
+    context : geopandas.GeoDataFrame
+        Context blocks to plot in grey.
+    scenario : geopandas.GeoDataFrame
+        Scenario blocks coloured by ``price_column``.
+    price_column : str
+        Column used for colouring scenario blocks.
+    vmin, vmax : float
+        Colour scale limits shared across plots.
+    title : str
+        Plot title.
+    show : bool
+        Whether to execute ``plt.show``.
+
+    Returns
+    -------
+    matplotlib.figure.Figure
+        Figure containing the scenario vs context view.
+    """
     fig, ax = plt.subplots(figsize=(18, 14))
     context.plot(ax=ax, color="lightgrey", edgecolor="white", linewidth=0.2, zorder=1)
     if len(scenario):
@@ -254,6 +356,28 @@ def _plot_context_map(
     title: str,
     show: bool,
 ) -> plt.Figure:
+    """Plot the full context map with scenario blocks highlighted in grey.
+
+    Parameters
+    ----------
+    blocks : geopandas.GeoDataFrame
+        Context blocks coloured by ``price_column``.
+    scenario : geopandas.GeoDataFrame
+        Scenario overlay shown in neutral colour.
+    price_column : str
+        Column used for colour mapping.
+    vmin, vmax : float
+        Colour scale limits shared across plots.
+    title : str
+        Plot title.
+    show : bool
+        Whether to execute ``plt.show``.
+
+    Returns
+    -------
+    matplotlib.figure.Figure
+        Figure containing the context map.
+    """
     fig, ax = plt.subplots(figsize=(18, 14))
     if len(blocks):
         blocks.plot(
@@ -290,6 +414,28 @@ def _plot_combined_map(
     title: str,
     show: bool,
 ) -> plt.Figure:
+    """Plot the combined scenario and context price map.
+
+    Parameters
+    ----------
+    blocks : geopandas.GeoDataFrame
+        All blocks coloured by ``price_column``.
+    scenario : geopandas.GeoDataFrame
+        Scenario subset rendered using the same colour map.
+    price_column : str
+        Column used for colour mapping.
+    vmin, vmax : float
+        Colour scale limits shared across plots.
+    title : str
+        Plot title.
+    show : bool
+        Whether to execute ``plt.show``.
+
+    Returns
+    -------
+    matplotlib.figure.Figure
+        Figure containing the combined view.
+    """
     fig, ax = plt.subplots(figsize=(18, 14))
     if len(blocks):
         blocks.plot(

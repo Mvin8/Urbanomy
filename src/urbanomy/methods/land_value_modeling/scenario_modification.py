@@ -26,6 +26,13 @@ class ScenarioTEPModifier:
     """
 
     def __init__(self, blocks: GeoDataFrame) -> None:
+        """Store a reference blocks dataset used as the scenario baseline.
+
+        Parameters
+        ----------
+        blocks : geopandas.GeoDataFrame
+            Source blocks that will be copied and modified per scenario.
+        """
         self._blocks = blocks
 
     def apply(self, target_idx: int, changes: Mapping[str, object]) -> GeoDataFrame:
@@ -229,6 +236,22 @@ def plot_scenario_impact(
 
 
 def _build_buffer(blocks: GeoDataFrame, target_idx: int, radius_m: float) -> GeoDataFrame:
+    """Create a buffer around the target block geometry.
+
+    Parameters
+    ----------
+    blocks : geopandas.GeoDataFrame
+        Source dataset containing the geometry.
+    target_idx : int
+        Index of the block serving as the buffer centre.
+    radius_m : float
+        Buffer radius expressed in metres.
+
+    Returns
+    -------
+    geopandas.GeoDataFrame
+        Single-row GeoDataFrame with the buffered geometry.
+    """
     tgt_geom = blocks.loc[target_idx, "geometry"]
     buf = gpd.GeoSeries([tgt_geom], crs=blocks.crs)
     if buf.crs and buf.crs.is_geographic:
@@ -248,6 +271,26 @@ def _plot_change_map(
     vmax: float,
     show: bool,
 ) -> plt.Figure:
+    """Plot percentage price changes around the target block.
+
+    Parameters
+    ----------
+    changed : geopandas.GeoDataFrame
+        Blocks whose price change magnitude exceeds ``eps``.
+    unchanged : geopandas.GeoDataFrame
+        Blocks within the buffer that remain below the change threshold.
+    target_geometry : shapely.geometry.base.BaseGeometry
+        Geometry of the focus block to outline.
+    vmin, vmax : float
+        Color scale bounds for percentage change.
+    show : bool
+        Whether to render the Matplotlib figure immediately.
+
+    Returns
+    -------
+    matplotlib.figure.Figure
+        Figure displaying the scenario impact map.
+    """
     fig, ax = plt.subplots(figsize=(25, 20))
     if len(unchanged):
         unchanged.plot(ax=ax, color="lightgrey", edgecolor="white", linewidth=0.3, zorder=1)
@@ -305,6 +348,18 @@ def _plot_change_map(
 
 
 def _summarise_changes(gdf: GeoDataFrame) -> Dict[str, float]:
+    """Compute aggregate before/after price statistics for a subset of blocks.
+
+    Parameters
+    ----------
+    gdf : geopandas.GeoDataFrame
+        Dataset containing ``price_before`` and ``price_after`` columns.
+
+    Returns
+    -------
+    dict[str, float]
+        Aggregated sums, deltas, and count information.
+    """
     price_before = float(gdf["price_before"].sum())
     price_after = float(gdf["price_after"].sum())
     delta = price_after - price_before
@@ -326,6 +381,21 @@ def _print_summary(
     total_summary: Dict[str, float] | None = None,
     total_count: int | None = None,
 ) -> None:
+    """Print human-readable summaries of scenario-induced price changes.
+
+    Parameters
+    ----------
+    gdf : geopandas.GeoDataFrame
+        Blocks whose changes are being highlighted.
+    summary : dict[str, float]
+        Aggregated metrics for ``gdf`` from :func:`_summarise_changes`.
+    eps : float
+        Price-change threshold used to filter ``gdf``.
+    total_summary : dict[str, float], optional
+        Aggregated metrics for the entire buffer.
+    total_count : int, optional
+        Total number of buffered blocks.
+    """
     threshold_note = f" (|Δ₽| > {eps:g})" if eps > 0 else ""
     print(f"\nСтатистика по кварталам в пределах буфера{threshold_note}:")
     if len(gdf):
@@ -357,6 +427,22 @@ def _print_summary(
 
 
 def _fmt_rub(value: float, *, signed: bool = False, digits: int = 0) -> str:
+    """Format numeric values as Russian roubles with thin-space separators.
+
+    Parameters
+    ----------
+    value : float
+        Numeric value to format.
+    signed : bool, optional
+        Display the sign explicitly when ``True``.
+    digits : int, optional
+        Number of decimal digits to display.
+
+    Returns
+    -------
+    str
+        Formatted currency string or an em dash if value is not finite.
+    """
     try:
         value = float(value)
         if not np.isfinite(value):
@@ -368,6 +454,20 @@ def _fmt_rub(value: float, *, signed: bool = False, digits: int = 0) -> str:
 
 
 def _fmt_pct(value: float, digits: int = 1) -> str:
+    """Format percentage values with an explicit sign when finite.
+
+    Parameters
+    ----------
+    value : float
+        Percentage value to display.
+    digits : int, optional
+        Number of decimal digits to display.
+
+    Returns
+    -------
+    str
+        Signed percentage string or an em dash if value is not finite.
+    """
     try:
         value = float(value)
         if not np.isfinite(value):

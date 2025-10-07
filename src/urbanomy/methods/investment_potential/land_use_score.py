@@ -8,7 +8,6 @@ import pandas as pd
 from pandera import check_types
 import json
 
-from ...utils.validation import LandUseDF
 from .constants import LAND_USE_TO_POTENTIAL_COLUMN, LAND_USE_WEIGHTS
 
 

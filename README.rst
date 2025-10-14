@@ -117,7 +117,7 @@ Investment attractiveness
        # ... add other land-use profiles
    }
    analyzer = InvestmentAttractivenessAnalyzer(benchmarks=BENCHMARKS)
-   enriched_blocks, project_summary = analyzer.calculate_investment_metrics(investment_ready)
+   project_summary = analyzer.calculate_investment_metrics(investment_ready)
 
 .. figure:: docs/img/investment_metrics.png
    :alt: Investment metrics dashboard with INV index

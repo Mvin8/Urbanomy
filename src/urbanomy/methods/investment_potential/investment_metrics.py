@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Any, Mapping, Sequence
+from typing import Any, Mapping, Sequence, overload
 
 import geopandas as gpd
 import numpy as np
@@ -498,8 +498,8 @@ class InvestmentAttractivenessAnalyzer:
     def calculate_investment_metrics(
         self,
         gdf: gpd.GeoDataFrame,
-    ) -> tuple[gpd.GeoDataFrame, pd.DataFrame]:
-        """Compute investment metrics and summary tables for polygons.
+    ) -> pd.DataFrame:
+        """Return a per-land-use summary of investment metrics.
 
         Parameters
         ----------
@@ -508,9 +508,9 @@ class InvestmentAttractivenessAnalyzer:
 
         Returns
         -------
-        tuple[geopandas.GeoDataFrame, pandas.DataFrame]
-            Tuple of per-polygon metrics (GeoDataFrame) and aggregated summary
-            table (DataFrame). Returns empty structures if ``gdf`` is empty.
+        pandas.DataFrame
+            Summary table with metrics for each polygon. When ``gdf`` is empty,
+            returns an empty DataFrame with ``SUMMARY_COLUMNS``.
 
         Raises
         ------
@@ -518,10 +518,10 @@ class InvestmentAttractivenessAnalyzer:
             If the requested economic metric is missing from the prepared data.
         """
         if gdf.empty:
-            return gdf.copy(), pd.DataFrame()
+            print("No polygons provided; summary is empty.")
+            return pd.DataFrame(columns=SUMMARY_COLUMNS)
 
         working = prepare_investment_input(gdf)
-        pd.set_option("display.float_format", lambda v: f"{v:,.2f}")
         self._coerce_numeric_columns(working, INVESTMENT_NUMERIC_COLUMNS)
 
         row_results = [
@@ -529,30 +529,46 @@ class InvestmentAttractivenessAnalyzer:
             for idx, row in working.iterrows()
         ]
 
-        metrics_records = [
-            {
-                "_index": result.index,
-                "ECON_NPV": result.metrics.npv,
-                "ECON_IRR": result.metrics.irr,
-                "ECON_ROI": result.metrics.roi,
-                "ECON_PP_years": result.metrics.payback_years,
-                "ECON_EI": result.metrics.economic_index,
-                "land_area": result.land_area,
-                "built_area": result.built_area,
-                "land_cost": result.land_cost_total,
-                "construction_cost": result.construction_cost,
-                "investment_need": result.investment_need,
-            }
-            for result in row_results
-        ]
-        metrics_df = pd.DataFrame.from_records(metrics_records).set_index("_index")
+        raw_to_final = {
+            "ECON_NPV": "NPV",
+            "ECON_IRR": "IRR",
+            "ECON_ROI": "ROI",
+            "ECON_PP_years": "PP_years",
+            "ECON_EI": "EI",
+        }
+        profile_fields = {
+            "land_area": "land_area",
+            "built_area": "built_area",
+            "land_cost": "land_cost_total",
+            "construction_cost": "construction_cost",
+            "investment_need": "investment_need",
+        }
+
+        metrics_records: list[dict[str, Any]] = []
+        for result in row_results:
+            record: dict[str, Any] = {"_index": result.index}
+            record.update(
+                {raw: getattr(result.metrics, attr) for raw, attr in {
+                    "ECON_NPV": "npv",
+                    "ECON_IRR": "irr",
+                    "ECON_ROI": "roi",
+                    "ECON_PP_years": "payback_years",
+                    "ECON_EI": "economic_index",
+                }.items()}
+            )
+            record.update(
+                {column: getattr(result, attr) for column, attr in profile_fields.items()}
+            )
+            metrics_records.append(record)
+
+        metrics_df = (
+            pd.DataFrame.from_records(metrics_records)
+            .set_index("_index")
+        )
         working = working.join(metrics_df)
 
-        working["NPV"] = working["ECON_NPV"]
-        working["IRR"] = working["ECON_IRR"]
-        working["ROI"] = working["ECON_ROI"]
-        working["PP_years"] = working["ECON_PP_years"]
-        working["EI"] = working["ECON_EI"]
+        for raw_col, final_col in raw_to_final.items():
+            working[final_col] = working[raw_col]
 
         price_series = (
             pd.to_numeric(working[DEFAULT_IP_VALUE], errors="coerce")
@@ -574,24 +590,7 @@ class InvestmentAttractivenessAnalyzer:
             + economic_weights * economic_range.normalized
         ).round(2)
 
-        summary = pd.DataFrame(
-            {
-                "land_use": working["land_use"],
-                "land_area": working["land_area"],
-                "built_area": working["built_area"],
-                "land_cost": working["land_cost"],
-                "construction_cost": working["construction_cost"],
-                "investment_need": working["investment_need"],
-                "NPV": working["NPV"],
-                "IRR": working["IRR"],
-                "ROI": working["ROI"],
-                "PP_years": working["PP_years"],
-                "EI": working["EI"],
-                "spatial_potential": working["spatial_potential"],
-                "INV": working["INV"],
-            },
-            index=working.index,
-        )
+        summary = working.reindex(columns=SUMMARY_COLUMNS).copy()
 
         project_cf = self._aggregate_cashflows(result.cashflow for result in row_results)
         project_metrics = (
@@ -600,15 +599,15 @@ class InvestmentAttractivenessAnalyzer:
             else None
         )
 
-        total_area = working["land_area"].sum(skipna=True)
-        total_built = working["built_area"].sum(skipna=True)
-        total_land_cost = working["land_cost"].sum(skipna=True)
-        total_construction_cost = working["construction_cost"].sum(skipna=True)
-        total_investment_need = working["investment_need"].sum(skipna=True)
+        total_area = summary["land_area"].sum(skipna=True)
+        total_built = summary["built_area"].sum(skipna=True)
+        total_land_cost = summary["land_cost"].sum(skipna=True)
+        total_construction_cost = summary["construction_cost"].sum(skipna=True)
+        total_investment_need = summary["investment_need"].sum(skipna=True)
 
         s_project = np.nan
         if total_area > 0 and price_series.notna().any():
-            weighted = price_series * working["land_area"]
+            weighted = price_series * summary["land_area"]
             s_project = float(weighted.sum(skipna=True) / total_area)
 
         e_project_val = np.nan
@@ -619,13 +618,13 @@ class InvestmentAttractivenessAnalyzer:
                 if np.isfinite(e_project_val):
                     e_norm_project = float(np.clip(e_project_val, 0, 100))
             else:
-                metric_map = {
-                    "NPV": project_metrics.npv,
-                    "IRR": project_metrics.irr,
-                    "ROI": project_metrics.roi,
-                    "PP_years": project_metrics.payback_years,
-                }
-                e_project_val = metric_map.get(self.metric, project_metrics.npv)
+                metric_attr = {
+                    "NPV": "npv",
+                    "IRR": "irr",
+                    "ROI": "roi",
+                    "PP_years": "payback_years",
+                }.get(self.metric, "npv")
+                e_project_val = getattr(project_metrics, metric_attr)
                 if (
                     np.isfinite(e_project_val)
                     and economic_range.has_valid
@@ -660,58 +659,28 @@ class InvestmentAttractivenessAnalyzer:
 
         inv_project = ws_mean * s_norm_project + we_mean * e_norm_project
 
-        summary.loc["project_total"] = {
-            "land_use": "project",
-            "land_area": total_area,
-            "built_area": total_built,
-            "land_cost": total_land_cost,
-            "construction_cost": total_construction_cost,
-            "investment_need": total_investment_need,
-            "NPV": project_metrics.npv if project_metrics is not None else np.nan,
-            "IRR": project_metrics.irr if project_metrics is not None else np.nan,
-            "ROI": project_metrics.roi if project_metrics is not None else np.nan,
-            "PP_years": project_metrics.payback_years if project_metrics is not None else np.nan,
-            "EI": project_metrics.economic_index if project_metrics is not None else np.nan,
-            "spatial_potential": s_project,
-            "INV": round(inv_project, 2),
-        }
-
         currency_columns = {"land_cost", "construction_cost", "investment_need", "NPV"}
         numeric_cols = summary.select_dtypes(include=[np.number]).columns
         for col in numeric_cols:
-            decimals = 2
-            summary[col] = self._round_clean(summary[col], decimals=decimals)
+            summary[col] = self._round_clean(summary[col], decimals=2)
             if col in currency_columns:
                 summary[col] = summary[col].astype(float)
 
-        round_specs: dict[str, int] = {
-            "land_cost": 2,
-            "construction_cost": 2,
-            "investment_need": 2,
-            "NPV": 2,
-            "INV": 2,
-            "spatial_potential": 2,
-            "land_area": 2,
-            "built_area": 2,
-            "IRR": 2,
-            "ROI": 2,
-            "PP_years": 2,
-            "EI": 2,
-        }
-        for col, decimals in round_specs.items():
-            if col in working.columns:
-                working[col] = self._round_clean(working[col], decimals=decimals)
-                if col in currency_columns:
-                    working[col] = working[col].astype(float)
+        print("Project totals:")
+        print(f" • Land area:          {total_area:,.2f}")
+        print(f" • Built area:         {total_built:,.2f}")
+        print(f" • Land cost:          {total_land_cost:,.2f}")
+        print(f" • Construction cost:  {total_construction_cost:,.2f}")
+        print(f" • Investment need:    {total_investment_need:,.2f}")
+        print(f" • Spatial potential:  {s_project:,.2f}" if np.isfinite(s_project) else " • Spatial potential:  n/a")
+        if project_metrics is not None:
+            print(f" • Project NPV:        {project_metrics.npv:,.2f}")
+            print(f" • Project IRR:        {project_metrics.irr:,.2f}")
+            print(f" • Project ROI:        {project_metrics.roi:,.2f}")
+            print(f" • Project PP (yrs):   {project_metrics.payback_years:,.2f}")
+            print(f" • Project EI:         {project_metrics.economic_index:,.2f}")
+            print(f" • Project INV score:  {inv_project:,.2f}")
+        else:
+            print(" • Project metrics:    not available (no cashflows)")
 
-        working = working.drop(
-            columns=["ECON_NPV", "ECON_IRR", "ECON_ROI", "ECON_PP_years", "ECON_EI"],
-            errors="ignore",
-        )
-
-        summary_columns = list(SUMMARY_COLUMNS)
-        keep_cols = ["geometry"] + [col for col in summary_columns if col in working.columns]
-        working = working[keep_cols]
-        summary = summary[summary_columns]
-
-        return working, summary
+        return summary

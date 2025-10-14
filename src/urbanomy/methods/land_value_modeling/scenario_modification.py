@@ -12,7 +12,13 @@ from matplotlib.transforms import offset_copy
 
 from blocksnet.enums import LandUse
 
-from .constants import CATEGORICAL_FEATURES, ORIGINAL_FEATURES, RADIUS_LIST
+from .constants import (
+    BlockColumn,
+    CATEGORICAL_FEATURES,
+    ORIGINAL_FEATURES,
+    RADIUS_LIST,
+    ScenarioResultKey,
+)
 from .land_price_estimation import LandPriceEstimator
 
 
@@ -59,46 +65,60 @@ class ScenarioTEPModifier:
 
         row = df.loc[target_idx].to_dict()
         normalised_changes = dict(changes)
-        if "land_use" in normalised_changes:
-            normalised_changes["land_use"] = self._coerce_land_use(normalised_changes["land_use"])
+
+        land_use_key = BlockColumn.LAND_USE.value
+        if land_use_key in normalised_changes:
+            normalised_changes[land_use_key] = self._coerce_land_use(normalised_changes[land_use_key])
 
         row.update(normalised_changes)
 
-        site_area = float(row.get("site_area", df.at[target_idx, "site_area"]))
+        site_area_key = BlockColumn.SITE_AREA.value
+        build_key = BlockColumn.BUILD_FLOOR_AREA.value
+        living_key = BlockColumn.LIVING_AREA.value
+        non_living_key = BlockColumn.NON_LIVING_AREA.value
+        mxi_key = BlockColumn.MXI.value
+        footprint_key = BlockColumn.FOOTPRINT_AREA.value
+        population_key = BlockColumn.POPULATION.value
+        share_key = BlockColumn.SHARE.value
+        residential_key = BlockColumn.RESIDENTIAL.value
+        share_living_key = BlockColumn.SHARE_LIVING.value
+        share_non_living_key = BlockColumn.SHARE_NON_LIVING.value
 
-        build = float(row.get("build_floor_area", df.at[target_idx, "build_floor_area"]))
-        live = float(row.get("living_area", df.at[target_idx, "living_area"]))
-        non = row.get("non_living_area", np.nan)
+        site_area = float(row.get(site_area_key, df.at[target_idx, site_area_key]))
+
+        build = float(row.get(build_key, df.at[target_idx, build_key]))
+        live = float(row.get(living_key, df.at[target_idx, living_key]))
+        non = row.get(non_living_key, np.nan)
 
         if not np.isfinite(non):
-            if "build_floor_area" in changes and "living_area" in changes:
+            if build_key in changes and living_key in changes:
                 non = max(build - live, 0.0)
-            elif ("mxi" in changes) or ("mxi" in row):
-                mxi = float(row.get("mxi", df.at[target_idx, "mxi"]))
+            elif (mxi_key in changes) or (mxi_key in row):
+                mxi = float(row.get(mxi_key, df.at[target_idx, mxi_key]))
                 non = max(mxi * build, 0.0)
             else:
-                non = float(df.at[target_idx, "non_living_area"])
+                non = float(df.at[target_idx, non_living_key])
 
-        if ("non_living_area" in changes and "living_area" in changes) and ("build_floor_area" not in changes):
+        if (non_living_key in changes and living_key in changes) and (build_key not in changes):
             build = live + float(non)
 
-        row["build_floor_area"] = build
-        row["living_area"] = live
-        row["non_living_area"] = float(non)
+        row[build_key] = build
+        row[living_key] = live
+        row[non_living_key] = float(non)
 
-        footprint = float(row.get("footprint_area", df.at[target_idx, "footprint_area"]))
-        pop = float(row.get("population", df.at[target_idx, "population"]))
+        footprint = float(row.get(footprint_key, df.at[target_idx, footprint_key]))
+        population = float(row.get(population_key, df.at[target_idx, population_key]))
 
-        row["fsi"] = build / site_area if site_area > 0 else np.nan
-        row["gsi"] = footprint / site_area if site_area > 0 else np.nan
-        row["mxi"] = (row["non_living_area"] / build) if build > 0 else 0.0
-        row["l"] = (build / pop) if pop > 0 else np.nan
-        row["osr"] = (site_area - footprint) / site_area if site_area > 0 else np.nan
-        row["share_living"] = live / site_area if site_area > 0 else np.nan
-        row["share_non_living"] = row["non_living_area"] / site_area if site_area > 0 else np.nan
+        row[BlockColumn.FSI.value] = build / site_area if site_area > 0 else np.nan
+        row[BlockColumn.GSI.value] = footprint / site_area if site_area > 0 else np.nan
+        row[mxi_key] = (row[non_living_key] / build) if build > 0 else 0.0
+        row[BlockColumn.L.value] = (build / population) if population > 0 else np.nan
+        row[BlockColumn.OSR.value] = (site_area - footprint) / site_area if site_area > 0 else np.nan
+        row[share_living_key] = live / site_area if site_area > 0 else np.nan
+        row[share_non_living_key] = row[non_living_key] / site_area if site_area > 0 else np.nan
 
-        if "residential" in normalised_changes and "share" not in normalised_changes:
-            row["share"] = float(row["residential"])
+        if residential_key in normalised_changes and share_key not in normalised_changes:
+            row[share_key] = float(row[residential_key])
 
         for key, value in row.items():
             df.at[target_idx, key] = value
@@ -178,20 +198,9 @@ def plot_scenario_impact(
 
     Returns
     -------
-    dict
-        Dictionary with the following keys:
-
-        ``'map'``
-            GeoDataFrame containing only blocks whose absolute price change
-            exceeds ``eps`` within the buffer.
-        ``'map_all'``
-            GeoDataFrame with all buffered blocks (including unchanged ones).
-        ``'fig'``
-            Matplotlib figure with the visualisation of the scenario impact.
-        ``'summary'``
-            Aggregated statistics for the blocks included in ``'map'``.
-        ``'summary_all'``
-            Aggregated statistics for all buffered blocks.
+    dict[str, object]
+        Mapping keyed by :class:`ScenarioResultKey` values with GeoDataFrames,
+        figures, and summary statistics for the scenario impact analysis.
     """
 
     features = tuple(orig_features) if orig_features is not None else ORIGINAL_FEATURES
@@ -259,11 +268,11 @@ def plot_scenario_impact(
         )
 
     return {
-        "map": changed if len(changed) else clipped.iloc[0:0].copy(),
-        "map_all": clipped,
-        "fig": fig,
-        "summary": summary_changed,
-        "summary_all": summary_all,
+        ScenarioResultKey.MAP.value: changed if len(changed) else clipped.iloc[0:0].copy(),
+        ScenarioResultKey.MAP_ALL.value: clipped,
+        ScenarioResultKey.FIGURE.value: fig,
+        ScenarioResultKey.SUMMARY.value: summary_changed,
+        ScenarioResultKey.SUMMARY_ALL.value: summary_all,
     }
 
 

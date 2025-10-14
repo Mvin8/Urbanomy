@@ -1,10 +1,9 @@
 from __future__ import annotations
-from typing import Any, Mapping
+import json
+from collections.abc import Mapping
 
 import geopandas as gpd
 import pandas as pd
-from pandera import check_types
-import json
 
 from blocksnet.enums import LandUse
 
@@ -26,7 +25,7 @@ class LandUseScoreAnalyzer:
     def __init__(
         self,
         weights: Mapping[str | LandUse, Mapping[str, float]] | None = None,
-        weights_path: str | None = None
+        weights_path: str | None = None,
     ):
         """
         Initialize the analyzer.
@@ -50,10 +49,13 @@ class LandUseScoreAnalyzer:
         if weights is not None:
             self.weights = self._normalise_weights(weights)
         elif weights_path:
-            with open(weights_path, "r", encoding="utf-8") as f:
-                loaded = json.load(f)
+            try:
+                with open(weights_path, "r", encoding="utf-8") as file_obj:
+                    loaded = json.load(file_obj)
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"Could not decode JSON weights from '{weights_path}'.") from exc
             if not isinstance(loaded, Mapping):
-                raise ValueError("Weights JSON must contain an object at the top level")
+                raise ValueError("Weights JSON must contain an object at the top level.")
             self.weights = self._normalise_weights(loaded)
         else:
             self.weights = {lu: dict(w) for lu, w in LAND_USE_WEIGHTS.items()}

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from enum import Enum
 from typing import Sequence
 
 
@@ -43,9 +44,41 @@ DEFAULT_OUTPUT_COLUMNS: Sequence[str] = ORIGINAL_FEATURES
 """Default set of columns produced by land data preparation."""
 
 
-DEFAULT_ADJACENCY_RADIUS: float = 10.0
+DEFAULT_ADJACENCY_RADIUS: int = 10
 """Default adjacency radius (metres) used to build block graphs."""
 
 
 DEFAULT_SQM_PER_PERSON: float = 20.0
 """Default number of square metres per person when estimating population."""
+
+
+class BlockColumn(str, Enum):
+    """Canonical column identifiers used across land value workflows."""
+
+    LAND_USE = "land_use"
+    SHARE = "share"
+    FOOTPRINT_AREA = "footprint_area"
+    BUILD_FLOOR_AREA = "build_floor_area"
+    LIVING_AREA = "living_area"
+    NON_LIVING_AREA = "non_living_area"
+    POPULATION = "population"
+    SITE_AREA = "site_area"
+    FSI = "fsi"
+    GSI = "gsi"
+    MXI = "mxi"
+    L = "l"
+    OSR = "osr"
+    SHARE_LIVING = "share_living"
+    SHARE_NON_LIVING = "share_non_living"
+    RESIDENTIAL = "residential"
+    IS_SCENARIO = "is_scn"
+
+
+class ScenarioResultKey(str, Enum):
+    """Named keys returned by scenario impact helpers."""
+
+    MAP = "map"
+    MAP_ALL = "map_all"
+    FIGURE = "fig"
+    SUMMARY = "summary"
+    SUMMARY_ALL = "summary_all"

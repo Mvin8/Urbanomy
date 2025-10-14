@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
 
@@ -20,8 +21,9 @@ from .constants import (
     DEFAULT_DISCOUNT_RATE,
     DEFAULT_ECON_METRIC,
     DEFAULT_IP_VALUE,
-    LAND_USE_CONFIGS,
     INVESTMENT_WEIGHTS,
+    LAND_USE_CONFIGS,
+    SUMMARY_COLUMNS,
 )
 from .utils_metrics import (
     economic_index,
@@ -237,7 +239,7 @@ class InvestmentAttractivenessAnalyzer:
         try:
             return float(value)
         except (TypeError, ValueError):
-            return float("nan")
+            return math.nan
 
     @staticmethod
     def _round_clean(values: pd.Series | np.ndarray, decimals: int = 2) -> pd.Series:
@@ -301,7 +303,7 @@ class InvestmentAttractivenessAnalyzer:
         land_area = self._to_float(row.get("site_area"))
         if not np.isfinite(land_area) or land_area <= 0:
             geom = row.get("geometry")
-            land_area = float(getattr(geom, "area", float("nan")))
+            land_area = float(getattr(geom, "area", math.nan))
         if not np.isfinite(land_area) or land_area <= 0:
             raise ValueError(f"Polygon {row.name} has no valid land area")
 
@@ -319,14 +321,14 @@ class InvestmentAttractivenessAnalyzer:
             params["built_area"] = built_area
         else:
             params.pop("built_area", None)
-            built_area = float("nan")
+            built_area = math.nan
 
         if np.isfinite(built_area):
             gross_floor_area = built_area
         else:
             density = self._to_float(params.get("density"))
             gross_floor_area = (
-                land_area * density if np.isfinite(density) and density > 0 else float("nan")
+                land_area * density if np.isfinite(density) and density > 0 else math.nan
             )
 
         share_val = self._to_float(row.get("share"))
@@ -376,14 +378,14 @@ class InvestmentAttractivenessAnalyzer:
         if np.isfinite(profile.gross_floor_area) and np.isfinite(cost_build_unit):
             construction_cost = profile.gross_floor_area * cost_build_unit
         else:
-            construction_cost = float("nan")
+            construction_cost = math.nan
 
         finite_capex = [
             value
             for value in (profile.land_cost_total, construction_cost)
             if np.isfinite(value)
         ]
-        investment_need = float(sum(finite_capex)) if finite_capex else float("nan")
+        investment_need = float(sum(finite_capex)) if finite_capex else math.nan
 
         return RowComputation(
             index=idx,
@@ -433,7 +435,7 @@ class InvestmentAttractivenessAnalyzer:
         """
         if self.metric == "EI":
             normalized = series.clip(lower=0, upper=100).fillna(0.0)
-            return NormalizedMetricRange(series, normalized, float("nan"), float("nan"))
+            return NormalizedMetricRange(series, normalized, math.nan, math.nan)
 
         valid = series.notna()
         if valid.any():
@@ -707,23 +709,9 @@ class InvestmentAttractivenessAnalyzer:
             errors="ignore",
         )
 
-        summary_cols = [
-            "land_use",
-            "land_area",
-            "built_area",
-            "land_cost",
-            "construction_cost",
-            "investment_need",
-            "NPV",
-            "IRR",
-            "ROI",
-            "PP_years",
-            "EI",
-            "spatial_potential",
-            "INV",
-        ]
-        keep_cols = ["geometry"] + [col for col in summary_cols if col in working.columns]
+        summary_columns = list(SUMMARY_COLUMNS)
+        keep_cols = ["geometry"] + [col for col in summary_columns if col in working.columns]
         working = working[keep_cols]
-        summary = summary[summary_cols]
+        summary = summary[summary_columns]
 
         return working, summary

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from typing import Any, BinaryIO, Optional, Sequence, Union
 
 import geopandas as gpd
@@ -15,6 +16,7 @@ from blocksnet.machine_learning.regression import DensityRegressor
 from blocksnet.relations import generate_adjacency_graph
 
 from . import constants as _constants
+from .constants import BlockColumn
 
 DataFrameLike = Union[pd.DataFrame, gpd.GeoDataFrame]
 BlocksInput = Union[BinaryIO, DataFrameLike]
@@ -66,7 +68,38 @@ class LandDataPreparator:
         self._density_regressor = DensityRegressor()
         self._accessibility_cache: Optional[pd.DataFrame] = None
         self._last_prepared: Optional[gpd.GeoDataFrame] = None
-        log_config.set_logger_level(log_level)
+        self._log_level = log_level
+
+    @contextmanager
+    def _temporary_log_level(self):
+        """Temporarily set the shared blocksnet logger level for a call."""
+
+        setter = getattr(log_config, "set_logger_level", None)
+        if not callable(setter):
+            yield
+            return
+
+        getter = getattr(log_config, "get_logger_level", None)
+        previous_level = None
+        if callable(getter):
+            try:
+                previous_level = getter()
+            except Exception:  # pragma: no cover - defensive fallback
+                previous_level = None
+
+        try:
+            setter(self._log_level)
+        except Exception:  # pragma: no cover - defensive fallback
+            previous_level = None
+
+        try:
+            yield
+        finally:
+            if previous_level is not None:
+                try:
+                    setter(previous_level)
+                except Exception:  # pragma: no cover - defensive fallback
+                    pass
 
     def prepare(
         self,
@@ -93,20 +126,22 @@ class LandDataPreparator:
         geopandas.GeoDataFrame
             Prepared dataset containing engineered indicators and metadata.
         """
-        scenario_source = scenario_blocks if scenario_blocks is not None else self._scenario_source
-        context_source = context_blocks if context_blocks is not None else self._context_source
-        blocks = self._build_blocks(scenario_source, context_source)
-        self._ensure_land_use_enum(blocks)
-        self._clamp_land_use(blocks)
-        adjacency_graph = generate_adjacency_graph(blocks, self.adjacency_radius)
-        density_df = self._calculate_density(blocks, adjacency_graph)
-        self._attach_development_indicators(blocks, density_df)
-        self._append_morphotypes(blocks)
-        self._append_accessibility(blocks, accessibility_matrix)
-        prepared = self._cleanup(blocks)
-        prepared['id'] = prepared.index
+        with self._temporary_log_level():
+            scenario_source = scenario_blocks if scenario_blocks is not None else self._scenario_source
+            context_source = context_blocks if context_blocks is not None else self._context_source
+            blocks = self._build_blocks(scenario_source, context_source)
+            self._ensure_land_use_enum(blocks)
+            self._clamp_land_use(blocks)
+            adjacency_graph = generate_adjacency_graph(blocks, self.adjacency_radius)
+            density_df = self._calculate_density(blocks, adjacency_graph)
+            self._attach_development_indicators(blocks, density_df)
+            self._append_morphotypes(blocks)
+            self._append_accessibility(blocks, accessibility_matrix)
+            prepared = self._cleanup(blocks)
+            prepared['id'] = prepared.index
+
         self._last_prepared = prepared.copy()
-        return prepared.copy()
+        return prepared
 
     def _build_blocks(
         self,
@@ -133,8 +168,8 @@ class LandDataPreparator:
             context = context.to_crs(scenario.crs)
         blocks = pd.concat([scenario, context], ignore_index=True)
         blocks = gpd.GeoDataFrame(blocks, geometry=scenario.geometry.name, crs=scenario.crs)
-        blocks['site_area'] = blocks.geometry.area
-        blocks['is_scn'] = LandDataPreparator.mark_scenario_blocks(blocks, scenario)
+        blocks[BlockColumn.SITE_AREA.value] = blocks.geometry.area
+        blocks[BlockColumn.IS_SCENARIO.value] = LandDataPreparator.mark_scenario_blocks(blocks, scenario)
         return blocks
 
     def _resolve_blocks_input(
@@ -182,7 +217,7 @@ class LandDataPreparator:
         if hasattr(source, 'read'):
             binary_source = LandDataPreparator._reset_stream(source)
             return pd.read_pickle(binary_source)
-        raise TypeError('Ожидался GeoDataFrame/DataFrame или бинарный поток с данными.')
+        raise TypeError("Expected a GeoDataFrame/DataFrame or a binary stream with pickled data.")
 
     @staticmethod
     def _reset_stream(stream: BinaryIO) -> BinaryIO:
@@ -225,7 +260,7 @@ class LandDataPreparator:
         if isinstance(data, gpd.GeoDataFrame):
             return data.copy()
         if 'geometry' not in data.columns:
-            raise ValueError("Переданный DataFrame должен содержать колонку 'geometry'.")
+            raise ValueError("The provided DataFrame must contain a 'geometry' column.")
         crs = getattr(data, 'crs', None)
         return gpd.GeoDataFrame(data.copy(), geometry='geometry', crs=crs)
 
@@ -281,7 +316,8 @@ class LandDataPreparator:
 
     def _ensure_land_use_enum(self, blocks: gpd.GeoDataFrame) -> None:
         """Coerce ``land_use`` column to ``LandUse`` enum values when possible."""
-        if 'land_use' not in blocks.columns:
+        land_use_column = BlockColumn.LAND_USE.value
+        if land_use_column not in blocks.columns:
             return
 
         def coerce(value: Any) -> Any:
@@ -305,7 +341,7 @@ class LandDataPreparator:
             except KeyError:
                 return value
 
-        blocks['land_use'] = blocks['land_use'].apply(coerce)
+        blocks[land_use_column] = blocks[land_use_column].apply(coerce)
 
     def _calculate_density(self, blocks: gpd.GeoDataFrame, adjacency_graph) -> pd.DataFrame:
         """Evaluate density indicators with basic post-processing.
@@ -340,7 +376,7 @@ class LandDataPreparator:
             Output of :meth:`_calculate_density` containing density metrics.
         """
         density_df = density_df.copy()
-        density_df['site_area'] = blocks['site_area']
+        density_df[BlockColumn.SITE_AREA.value] = blocks[BlockColumn.SITE_AREA.value]
         indicators = calculate_development_indicators(density_df)
         population = (indicators['living_area'] // self.sqm_per_person).fillna(0)
         indicators['population'] = population.astype(int)
@@ -416,9 +452,9 @@ class LandDataPreparator:
             binary_source = LandDataPreparator._reset_stream(source)
             loaded = pd.read_pickle(binary_source)
             if not isinstance(loaded, pd.DataFrame):
-                raise TypeError('Ожидался DataFrame доступности.')
+                raise TypeError("Expected the accessibility payload to be a pandas DataFrame.")
             return loaded
-        raise TypeError('Ожидался DataFrame или бинарный поток с матрицей доступности.')
+        raise TypeError("Expected a pandas DataFrame or a binary stream with an accessibility matrix.")
 
     def _cleanup(self, blocks: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
         """Remove intermediate columns and enforce output ordering.
@@ -440,7 +476,8 @@ class LandDataPreparator:
                 cleaned = cleaned.drop(columns=drop_cols)
         geom_col = cleaned.geometry.name
         keep_cols = [col for col in self.output_columns if col in cleaned.columns]
-        if 'is_scn' in cleaned.columns and 'is_scn' not in keep_cols:
-            keep_cols.append('is_scn')
+        scenario_flag = BlockColumn.IS_SCENARIO.value
+        if scenario_flag in cleaned.columns and scenario_flag not in keep_cols:
+            keep_cols.append(scenario_flag)
         ordered_cols = keep_cols + ([geom_col] if geom_col not in keep_cols else [])
         return cleaned[ordered_cols].copy()

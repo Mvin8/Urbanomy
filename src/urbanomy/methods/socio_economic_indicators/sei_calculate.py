@@ -39,7 +39,7 @@ class SEREstimator:
         need = ['population', 'employment_base']
         missing = [k for k in need if k not in params]
         if missing:
-            raise ValueError(f"Отсутствуют параметры: {missing}")
+            raise ValueError(f"Missing required parameters: {missing}")
         # слить дефолты и пользовательские параметры
         defaults = self.DEFAULT_PARAMETERS
         cfg = {**defaults, **params}
@@ -51,7 +51,6 @@ class SEREstimator:
                 cfg[key] = {**defaults.get(key, {}), **params[key]}
         self.cfg = cfg
 
-    @staticmethod
     @staticmethod
     def _normalise_land_use_label(value: Any) -> str:
         """Map raw land-use tokens to canonical enum values when possible."""
@@ -85,16 +84,22 @@ class SEREstimator:
         return float(mp.get(norm_key, mp.get('default', default)))
 
     @staticmethod
+    def _format_with_space_grouping(value: float, decimals: int) -> str:
+        """Return a decimal string with thin-space thousand separators."""
+        formatted = format(value, f"_.{decimals}f")
+        return formatted.replace("_", " ")
+
+    @staticmethod
     def _fmt(v: Optional[float]) -> str:
         if v is None or (isinstance(v, float) and (np.isnan(v))):
             return ""
         v = float(v)
         if abs(v) >= 100:
-            return f"{v:,.0f}".replace(",", " ")
+            return SEREstimator._format_with_space_grouping(v, 0)
         elif abs(v) >= 1:
-            return f"{v:,.2f}".replace(",", " ")
+            return SEREstimator._format_with_space_grouping(v, 2)
         else:
-            return f"{v:,.4f}".replace(",", " ")
+            return SEREstimator._format_with_space_grouping(v, 4)
 
     def compute(self, df: pd.DataFrame, pretty: bool = True) -> pd.DataFrame:
         """Calculate socio-economic deltas for construction and operation.

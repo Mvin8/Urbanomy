@@ -154,6 +154,8 @@ Reproducible pipelines live in ``examples/``:
 - `examples/investment_metrics.ipynb <examples/investment_metrics.ipynb>`_ – investment attractiveness dashboard.
 - `examples/socio_economic_indicators.ipynb <examples/socio_economic_indicators.ipynb>`_ – socio-economic reporting.
 
+All notebooks rely on sample assets committed to ``examples/data`` (GeoJSON blocks, accessibility matrices, CatBoost weights, and prepared pickle files). When running the notebooks from another working directory, point the loaders to that folder or provide equivalent datasets in the same structure.
+
 Documentation
 -------------
 The latest documentation is published automatically from ``main``:

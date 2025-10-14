@@ -312,7 +312,7 @@ def make_cashflow(
         raise ValueError(f"Profile '{lu}' requires a positive land_area")
 
     built_area_value = profile.get("built_area")
-    gfa = float(built_area_value) if _is_positive_number(built_area_value) else float("nan")
+    gfa = float(built_area_value) if _is_positive_number(built_area_value) else math.nan
     if not np.isfinite(gfa) or gfa <= 0:
         density = profile.get("density")
         if _is_positive_number(density):
@@ -378,10 +378,10 @@ def nanminmax(values: Iterable[float]) -> Tuple[float, float]:
     """
     arr = np.array(list(values), dtype=float)
     if arr.size == 0:
-        return float("nan"), float("nan")
+        return math.nan, math.nan
     finite = arr[np.isfinite(arr)]
     if finite.size == 0:
-        return float("nan"), float("nan")
+        return math.nan, math.nan
     return float(finite.min()), float(finite.max())
 
 

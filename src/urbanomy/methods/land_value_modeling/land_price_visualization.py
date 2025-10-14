@@ -242,8 +242,8 @@ def _compute_color_bounds(
         vmin = blocks[price_column].quantile(low)
         vmax = blocks[price_column].quantile(high)
     else:
-        vmin = float("nan")
-        vmax = float("nan")
+        vmin = np.nan
+        vmax = np.nan
     return vmin, vmax
 
 

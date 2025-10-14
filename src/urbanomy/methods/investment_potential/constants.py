@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import Enum
 from types import MappingProxyType
 from typing import Final, Mapping
 
@@ -135,3 +136,24 @@ DEFAULT_DISCOUNT_RATE: float = 0.18
 DEFAULT_AREA_COL: str = "Площадь территории"
 DEFAULT_IP_TYPE: str = "ip_type"
 DEFAULT_IP_VALUE: str = "ip_value"
+
+
+class InvestmentSummaryColumn(str, Enum):
+    """Named columns used in investment summary tables."""
+
+    LAND_USE = "land_use"
+    LAND_AREA = "land_area"
+    BUILT_AREA = "built_area"
+    LAND_COST = "land_cost"
+    CONSTRUCTION_COST = "construction_cost"
+    INVESTMENT_NEED = "investment_need"
+    NPV = "NPV"
+    IRR = "IRR"
+    ROI = "ROI"
+    PAYBACK_YEARS = "PP_years"
+    ECONOMIC_INDEX = "EI"
+    SPATIAL_POTENTIAL = "spatial_potential"
+    INVESTMENT_SCORE = "INV"
+
+
+SUMMARY_COLUMNS: Final[tuple[str, ...]] = tuple(column.value for column in InvestmentSummaryColumn)

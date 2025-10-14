@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
-from typing import Mapping, Sequence
+from typing import Mapping, Sequence, Any
 
 import geopandas as gpd
 import numpy as np
 import pandas as pd
 from libpysal.weights import DistanceBand, lag_spatial
+
+from blocksnet.enums import LandUse
 
 from .constants import CATEGORICAL_FEATURES, ORIGINAL_FEATURES, RADIUS_LIST
 
@@ -135,10 +137,40 @@ class LandPriceEstimator:
 
         for column in self._categorical_features:
             if column in base.columns:
-                base[column] = base[column].astype("string").fillna("missing")
+                base[column] = (
+                    base[column]
+                    .apply(self._categorical_token)
+                    .astype("string")
+                )
 
         lag_features = self._compute_lag_features(blocks)
         return pd.concat([base, lag_features], axis=1)
+    
+    @staticmethod
+    def _categorical_token(value: Any) -> str:
+        """Convert categorical values to stable tokens for model input."""
+        if value is None:
+            return "missing"
+        if isinstance(value, float) and np.isnan(value):
+            return "missing"
+        if isinstance(value, LandUse):
+            return value.name
+
+        text = str(value).strip()
+        if not text or text.lower() == "nan":
+            return "missing"
+
+        try:
+            return LandUse(text).name
+        except ValueError:
+            pass
+
+        upper = text.upper()
+        if upper.startswith("LANDUSE."):
+            upper = upper.split(".", 1)[1]
+        if upper in LandUse.__members__:
+            return upper
+        return upper
 
     def _compute_lag_features(self, blocks: gpd.GeoDataFrame) -> pd.DataFrame:
         """Compute spatial lag features for numeric columns and neighbour counts.

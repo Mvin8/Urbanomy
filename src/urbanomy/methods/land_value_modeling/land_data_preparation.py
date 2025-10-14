@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import BinaryIO, Optional, Sequence, Union
+from typing import Any, BinaryIO, Optional, Sequence, Union
 
 import geopandas as gpd
 import numpy as np
@@ -96,6 +96,7 @@ class LandDataPreparator:
         scenario_source = scenario_blocks if scenario_blocks is not None else self._scenario_source
         context_source = context_blocks if context_blocks is not None else self._context_source
         blocks = self._build_blocks(scenario_source, context_source)
+        self._ensure_land_use_enum(blocks)
         self._clamp_land_use(blocks)
         adjacency_graph = generate_adjacency_graph(blocks, self.adjacency_radius)
         density_df = self._calculate_density(blocks, adjacency_graph)
@@ -278,6 +279,34 @@ class LandDataPreparator:
             if column in blocks.columns:
                 blocks[column] = blocks[column].clip(upper=1)
 
+    def _ensure_land_use_enum(self, blocks: gpd.GeoDataFrame) -> None:
+        """Coerce ``land_use`` column to ``LandUse`` enum values when possible."""
+        if 'land_use' not in blocks.columns:
+            return
+
+        def coerce(value: Any) -> Any:
+            if isinstance(value, LandUse) or value is None:
+                return value
+
+            text = str(value).strip()
+            if not text:
+                return value
+
+            try:
+                return LandUse(text)
+            except ValueError:
+                pass
+
+            name = text.upper()
+            if name.startswith("LANDUSE."):
+                name = name.split(".", 1)[1]
+            try:
+                return LandUse[name]
+            except KeyError:
+                return value
+
+        blocks['land_use'] = blocks['land_use'].apply(coerce)
+
     def _calculate_density(self, blocks: gpd.GeoDataFrame, adjacency_graph) -> pd.DataFrame:
         """Evaluate density indicators with basic post-processing.
 
@@ -409,12 +438,6 @@ class LandDataPreparator:
             drop_cols = [col for col in cleaned.columns if col.startswith(prefix)]
             if drop_cols:
                 cleaned = cleaned.drop(columns=drop_cols)
-        if 'land_use' in cleaned.columns:
-            cleaned['land_use'] = (
-                cleaned['land_use']
-                .astype(str)
-                .str.replace(r'^LandUse\.', '', regex=True)
-            )
         geom_col = cleaned.geometry.name
         keep_cols = [col for col in self.output_columns if col in cleaned.columns]
         if 'is_scn' in cleaned.columns and 'is_scn' not in keep_cols:

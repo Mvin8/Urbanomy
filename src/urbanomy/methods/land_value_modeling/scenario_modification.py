@@ -2,14 +2,15 @@
 
 from __future__ import annotations
 
-from typing import Dict, Mapping, Sequence
+from typing import Any, Dict, Mapping, Sequence
 
 import geopandas as gpd
 import matplotlib.pyplot as plt
 import numpy as np
-import pandas as pd
 from geopandas import GeoDataFrame
 from matplotlib.transforms import offset_copy
+
+from blocksnet.enums import LandUse
 
 from .constants import CATEGORICAL_FEATURES, ORIGINAL_FEATURES, RADIUS_LIST
 from .land_price_estimation import LandPriceEstimator
@@ -35,7 +36,7 @@ class ScenarioTEPModifier:
         """
         self._blocks = blocks
 
-    def apply(self, target_idx: int, changes: Mapping[str, object]) -> GeoDataFrame:
+    def apply(self, target_idx: int, changes: Mapping[str, Any]) -> GeoDataFrame:
         """Return a modified copy of the blocks with updated TEP values.
 
         Parameters
@@ -43,7 +44,8 @@ class ScenarioTEPModifier:
         target_idx : int
             Index of the block that should be modified.
         changes : Mapping[str, object]
-            Dictionary of field updates (e.g. ``{"land_use": "RESIDENTIAL"}``).
+            Dictionary of field updates (e.g. ``{"land_use": LandUse.RESIDENTIAL}``
+            or an equivalent string token).
 
         Returns
         -------
@@ -56,7 +58,11 @@ class ScenarioTEPModifier:
             raise KeyError(f"Block index {target_idx} is not present in the dataset.")
 
         row = df.loc[target_idx].to_dict()
-        row.update(changes)
+        normalised_changes = dict(changes)
+        if "land_use" in normalised_changes:
+            normalised_changes["land_use"] = self._coerce_land_use(normalised_changes["land_use"])
+
+        row.update(normalised_changes)
 
         site_area = float(row.get("site_area", df.at[target_idx, "site_area"]))
 
@@ -91,13 +97,39 @@ class ScenarioTEPModifier:
         row["share_living"] = live / site_area if site_area > 0 else np.nan
         row["share_non_living"] = row["non_living_area"] / site_area if site_area > 0 else np.nan
 
-        if "residential" in changes and "share" not in changes:
+        if "residential" in normalised_changes and "share" not in normalised_changes:
             row["share"] = float(row["residential"])
 
         for key, value in row.items():
             df.at[target_idx, key] = value
 
         return df
+
+    @staticmethod
+    def _coerce_land_use(value: Any) -> LandUse:
+        """Convert user-provided land-use tokens to ``LandUse`` enum values."""
+        if isinstance(value, LandUse):
+            return value
+        if value is None:
+            raise ValueError("land_use cannot be None")
+
+        text = str(value).strip()
+        if not text:
+            raise ValueError("land_use cannot be empty")
+
+        try:
+            return LandUse(text)
+        except ValueError:
+            pass
+
+        upper = text.upper()
+        if upper.startswith("LANDUSE."):
+            upper = upper.split(".", 1)[1]
+
+        try:
+            return LandUse[upper]
+        except KeyError as exc:
+            raise ValueError(f"Unknown land_use value: {value!r}") from exc
 
 
 def plot_scenario_impact(
@@ -291,7 +323,7 @@ def _plot_change_map(
     matplotlib.figure.Figure
         Figure displaying the scenario impact map.
     """
-    fig, ax = plt.subplots(figsize=(25, 20))
+    fig, ax = plt.subplots(figsize=(35, 30))
     if len(unchanged):
         unchanged.plot(ax=ax, color="lightgrey", edgecolor="white", linewidth=0.3, zorder=1)
     if len(changed):
@@ -323,7 +355,7 @@ def _plot_change_map(
             ax.text(
                 x,
                 y,
-                str(row.get("land_use", "missing")),
+                _format_land_use(row.get("land_use")),
                 ha="center",
                 va="center",
                 fontsize=6,
@@ -360,6 +392,15 @@ def _summarise_changes(gdf: GeoDataFrame) -> Dict[str, float]:
     dict[str, float]
         Aggregated sums, deltas, and count information.
     """
+    if gdf is None or gdf.empty:
+        return {
+            "sum_before": 0.0,
+            "sum_after": 0.0,
+            "delta": 0.0,
+            "delta_pct": np.nan,
+            "count": 0,
+        }
+
     price_before = float(gdf["price_before"].sum())
     price_after = float(gdf["price_after"].sum())
     delta = price_after - price_before
@@ -371,6 +412,25 @@ def _summarise_changes(gdf: GeoDataFrame) -> Dict[str, float]:
         "delta_pct": delta_pct,
         "count": int(len(gdf)),
     }
+
+
+def _format_land_use(value: Any) -> str:
+    """Render land-use labels for plotting."""
+    if isinstance(value, LandUse):
+        return value.value
+    if value is None:
+        return "missing"
+    text = str(value).strip()
+    if not text or text.lower() == "nan":
+        return "missing"
+    try:
+        return LandUse(text).value
+    except ValueError:
+        pass
+    upper = text.upper()
+    if upper.startswith("LANDUSE."):
+        upper = upper.split(".", 1)[1]
+    return upper
 
 
 def _print_summary(

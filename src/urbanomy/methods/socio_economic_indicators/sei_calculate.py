@@ -2,6 +2,8 @@ import pandas as pd
 import numpy as np
 from typing import Dict, Any, Optional
 
+from blocksnet.enums import LandUse
+
 from .constants import DEFAULT_SER_PARAMETERS
 
 class SEREstimator:
@@ -50,8 +52,37 @@ class SEREstimator:
         self.cfg = cfg
 
     @staticmethod
-    def _get(mp: Dict[str, float], key: str, default: float = 0.0) -> float:
-        return float(mp.get(key, mp.get('default', default)))
+    @staticmethod
+    def _normalise_land_use_label(value: Any) -> str:
+        """Map raw land-use tokens to canonical enum values when possible."""
+        if isinstance(value, LandUse):
+            return value.value
+        if value is None:
+            return ""
+        text = str(value).strip()
+        if not text:
+            return text
+        try:
+            return LandUse(text).value
+        except ValueError:
+            pass
+        name = text.upper()
+        try:
+            return LandUse[name].value
+        except KeyError:
+            pass
+        if "." in name:
+            suffix = name.split(".")[-1]
+            try:
+                return LandUse[suffix].value
+            except KeyError:
+                return text
+        return text
+
+    @classmethod
+    def _get(cls, mp: Dict[str, float], key: Any, default: float = 0.0) -> float:
+        norm_key = cls._normalise_land_use_label(key)
+        return float(mp.get(norm_key, mp.get('default', default)))
 
     @staticmethod
     def _fmt(v: Optional[float]) -> str:
@@ -102,7 +133,7 @@ class SEREstimator:
         if 'land_cost' in d.columns and 'land_cost_before' not in d.columns:
             # если старой цены нет, считаем её равной текущей
             d['land_cost_before'] = d['land_cost']
-        d['land_use'] = d['land_use'].astype(str)
+        d['land_use'] = d['land_use'].apply(self._normalise_land_use_label)
 
         agg_spec = {
             'I': ('investment_need', 'sum'),

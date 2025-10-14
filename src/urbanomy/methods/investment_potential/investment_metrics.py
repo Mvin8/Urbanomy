@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Sequence
+from typing import Any, Mapping, Sequence
 
 import geopandas as gpd
 import numpy as np
 import pandas as pd
+
+from blocksnet.enums import LandUse
 
 from urbanomy.utils.investment_input import (
     INVESTMENT_NUMERIC_COLUMNS,
@@ -18,6 +20,7 @@ from .constants import (
     DEFAULT_DISCOUNT_RATE,
     DEFAULT_ECON_METRIC,
     DEFAULT_IP_VALUE,
+    LAND_USE_CONFIGS,
     INVESTMENT_WEIGHTS,
 )
 from .utils_metrics import (
@@ -138,8 +141,8 @@ class InvestmentAttractivenessAnalyzer:
 
     def __init__(
         self,
-        benchmarks: dict[str, dict[str, Any]],
-        weights_dict: dict[str, tuple[float, float]] | None = None,
+        benchmarks: Mapping[str | LandUse, Mapping[str, Any]],
+        weights_dict: Mapping[str | LandUse, Sequence[float]] | None = None,
         econ_metric: str = DEFAULT_ECON_METRIC,
         discount_rate: float | None = None,
     ) -> None:
@@ -147,10 +150,10 @@ class InvestmentAttractivenessAnalyzer:
 
         Parameters
         ----------
-        benchmarks : dict[str, dict[str, Any]]
-            Mapping from land-use codes to benchmark profiles describing
+        benchmarks : Mapping[str | LandUse, Mapping[str, Any]]
+            Mapping from land-use codes or ``LandUse`` enums to benchmark profiles describing
             profitability assumptions (densities, prices, etc.).
-        weights_dict : dict[str, tuple[float, float]] or None, optional
+        weights_dict : Mapping[str | LandUse, Sequence[float]] or None, optional
             Optional override for spatial/economic weights per land-use key.
             Defaults to ``INVESTMENT_WEIGHTS`` when omitted.
         econ_metric : str, optional
@@ -159,10 +162,63 @@ class InvestmentAttractivenessAnalyzer:
             Discount rate used when the benchmark profile does not specify one.
             If ``None``, ``DEFAULT_DISCOUNT_RATE`` is used.
         """
-        self.benchmarks = benchmarks
-        self.weights = weights_dict or INVESTMENT_WEIGHTS
+        self._benchmarks_enum = self._normalise_benchmarks(benchmarks)
+        self.benchmarks = {
+            land_use.value: dict(profile)
+            for land_use, profile in self._benchmarks_enum.items()
+        }
+        enum_weights, plain_weights = self._normalise_weights(
+            weights_dict or INVESTMENT_WEIGHTS
+        )
+        self._weights_enum = enum_weights
+        self.weights = plain_weights
         self.metric = econ_metric.upper()
         self.discount_rate = discount_rate if discount_rate is not None else DEFAULT_DISCOUNT_RATE
+
+    @staticmethod
+    def _coerce_land_use(value: str | LandUse) -> LandUse:
+        if isinstance(value, LandUse):
+            return value
+        try:
+            return LandUse(str(value))
+        except ValueError as exc:
+            raise KeyError(f"Unknown land-use '{value}'") from exc
+
+    def _normalise_benchmarks(
+        self,
+        benchmarks: Mapping[str | LandUse, Mapping[str, Any]] | None,
+    ) -> dict[LandUse, dict[str, Any]]:
+        """Convert benchmark keys to LandUse enum instances."""
+        normalised: dict[LandUse, dict[str, Any]] = {}
+        for key, profile in (benchmarks or {}).items():
+            land_use = self._coerce_land_use(key)
+            if not isinstance(profile, Mapping):
+                raise ValueError(
+                    f"Benchmark profile for '{land_use.value}' must be a mapping"
+                )
+            normalised[land_use] = dict(profile)
+        return normalised
+
+    def _normalise_weights(
+        self,
+        weights: Mapping[str | LandUse, Sequence[float]],
+    ) -> tuple[dict[LandUse, tuple[float, float]], dict[str, tuple[float, float]]]:
+        """Convert weights to LandUse-aware and string-keyed mappings."""
+        enum_map: dict[LandUse, tuple[float, float]] = {}
+        string_map: dict[str, tuple[float, float]] = {}
+        for key, pair in weights.items():
+            land_use = self._coerce_land_use(key)
+            if not isinstance(pair, Sequence) or len(pair) != 2:
+                raise ValueError(
+                    f"Weights for '{land_use.value}' must be a sequence of two values"
+                )
+            spatial, economic = float(pair[0]), float(pair[1])
+            enum_map[land_use] = (spatial, economic)
+            string_map[land_use.value] = (spatial, economic)
+        for land_use in LAND_USE_CONFIGS:
+            enum_map.setdefault(land_use, (0.5, 0.5))
+            string_map.setdefault(land_use.value, (0.5, 0.5))
+        return enum_map, string_map
 
     @staticmethod
     def _to_float(value: Any) -> float:
@@ -305,12 +361,13 @@ class InvestmentAttractivenessAnalyzer:
         KeyError
             If the polygon's land-use lacks benchmark configuration.
         """
-        land_use = str(row.get("land_use"))
-        if land_use not in self.benchmarks:
-            raise KeyError(f"No benchmark settings for land_use='{land_use}'")
+        land_use_raw = row.get("land_use")
+        land_use_enum = self._coerce_land_use(land_use_raw)
+        if land_use_enum not in self._benchmarks_enum:
+            raise KeyError(f"No benchmark settings for land_use='{land_use_enum.value}'")
 
-        profile = self._prepare_profile(row, self.benchmarks[land_use])
-        cashflow = make_cashflow(land_use, profile.land_area, profile.params)
+        profile = self._prepare_profile(row, self._benchmarks_enum[land_use_enum])
+        cashflow = make_cashflow(land_use_enum.value, profile.land_area, profile.params)
         discount_rate = profile.params.get("discount_rate", self.discount_rate)
 
         metrics = InvestmentMetricsResult.from_cashflow(cashflow, discount_rate)
@@ -330,7 +387,7 @@ class InvestmentAttractivenessAnalyzer:
 
         return RowComputation(
             index=idx,
-            land_use=land_use,
+            land_use=land_use_enum.value,
             land_area=profile.land_area,
             built_area=profile.built_area,
             land_cost_total=profile.land_cost_total,
@@ -463,7 +520,6 @@ class InvestmentAttractivenessAnalyzer:
 
         working = prepare_investment_input(gdf)
         pd.set_option("display.float_format", lambda v: f"{v:,.2f}")
-
         self._coerce_numeric_columns(working, INVESTMENT_NUMERIC_COLUMNS)
 
         row_results = [

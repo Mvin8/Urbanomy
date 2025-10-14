@@ -1,14 +1,18 @@
 from __future__ import annotations
-import math
-from typing import Dict, Any
+from typing import Any, Mapping
 
 import geopandas as gpd
-import matplotlib.pyplot as plt
 import pandas as pd
 from pandera import check_types
 import json
 
-from .constants import LAND_USE_TO_POTENTIAL_COLUMN, LAND_USE_WEIGHTS
+from blocksnet.enums import LandUse
+
+from .constants import (
+    LAND_USE_CONFIGS,
+    LAND_USE_TO_POTENTIAL_COLUMN,
+    LAND_USE_WEIGHTS,
+)
 
 
 class LandUseScoreAnalyzer:
@@ -21,7 +25,7 @@ class LandUseScoreAnalyzer:
 
     def __init__(
         self,
-        weights: dict[str, dict[str, float]] | None = None,
+        weights: Mapping[str | LandUse, Mapping[str, float]] | None = None,
         weights_path: str | None = None
     ):
         """
@@ -29,8 +33,8 @@ class LandUseScoreAnalyzer:
 
         Parameters
         ----------
-        weights : dict[str, dict[str, float]] or None
-            Custom per-land-use weighting factors for attributes.
+        weights : Mapping[str | LandUse, Mapping[str, float]] or None
+            Custom per-land-use weighting factors for attributes keyed by strings or ``LandUse``.
             If None, defaults to LAND_USE_WEIGHTS.
         weights_path : str or None
             Path to JSON file containing weights. Used if `weights` is None.
@@ -42,14 +46,45 @@ class LandUseScoreAnalyzer:
         ValueError
             If JSON at `weights_path` is invalid or not a dict of dicts.
         """
+        self.configs = LAND_USE_CONFIGS
         if weights is not None:
-            self.weights = weights
+            self.weights = self._normalise_weights(weights)
         elif weights_path:
             with open(weights_path, "r", encoding="utf-8") as f:
-                self.weights = json.load(f)
+                loaded = json.load(f)
+            if not isinstance(loaded, Mapping):
+                raise ValueError("Weights JSON must contain an object at the top level")
+            self.weights = self._normalise_weights(loaded)
         else:
-            self.weights = LAND_USE_WEIGHTS
+            self.weights = {lu: dict(w) for lu, w in LAND_USE_WEIGHTS.items()}
         self.land_use_to_potential: dict[str, str] = LAND_USE_TO_POTENTIAL_COLUMN
+
+    @staticmethod
+    def _coerce_land_use(value: str | LandUse) -> LandUse:
+        if isinstance(value, LandUse):
+            return value
+        try:
+            return LandUse(str(value))
+        except ValueError as exc:
+            raise ValueError(f"Unknown land-use key: {value!r}") from exc
+
+    def _normalise_weights(
+        self,
+        weights: Mapping[str | LandUse, Mapping[str, float]],
+    ) -> dict[str, dict[str, float]]:
+        normalised: dict[str, dict[str, float]] = {}
+        for key, inner in weights.items():
+            land_use = self._coerce_land_use(key)
+            if not isinstance(inner, Mapping):
+                raise ValueError(
+                    f"Weights for land-use '{land_use.value}' must be a mapping, "
+                    f"got {type(inner).__name__}"
+                )
+            normalised[land_use.value] = {
+                str(attr): float(weight)
+                for attr, weight in inner.items()
+            }
+        return normalised
 
     def _compute_wide(self, polygon_gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
         """
@@ -79,15 +114,25 @@ class LandUseScoreAnalyzer:
             if col not in pot_cols and ((gdf[col].between(-5, 5) & (gdf[col] != 0)).any())
         ]
 
-        for lu, pot_col in self.land_use_to_potential.items():
-            score_col = lu
+        for land_use, config in self.configs.items():
+            score_col = land_use.value
+            pot_col = config.potential_column
+            weights_for_lu = self.weights.get(score_col, {})
+            default_weight = weights_for_lu.get(
+                "default",
+                config.indicator_weights.get("default", 1.0),
+            )
 
             def calc(row: pd.Series) -> float | None:
                 pot = row.get(pot_col)
                 if pd.isna(pot):
                     return None
                 vals = [
-                    row[attr] * self.weights.get(lu, {}).get(attr, self.weights[lu]["default"])
+                    row[attr]
+                    * weights_for_lu.get(
+                        attr,
+                        default_weight,
+                    )
                     for attr in attrs
                     if pd.notna(row[attr])
                 ]

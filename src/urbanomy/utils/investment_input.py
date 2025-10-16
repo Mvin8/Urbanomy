@@ -188,9 +188,11 @@ def _ensure_geodataframe(data: gpd.GeoDataFrame | pd.DataFrame) -> gpd.GeoDataFr
 
 
 def _build_ip_value_lookup(
-    base_gdf: gpd.GeoDataFrame,
+    base_gdf: gpd.GeoDataFrame | pd.DataFrame,
     allowed_uses: Iterable[str],
     *,
+    land_use_column: str,
+    land_use_prefix_pattern: str,
     ip_type_column: str,
     ip_value_column: str,
 ) -> pd.DataFrame:
@@ -198,10 +200,15 @@ def _build_ip_value_lookup(
 
     Parameters
     ----------
-    base_gdf : geopandas.GeoDataFrame
+    base_gdf : geopandas.GeoDataFrame or pandas.DataFrame
         Reference dataset containing baseline IP values per land-use type.
     allowed_uses : Iterable[str]
         Iterable of land-use codes to retain when computing the lookup table.
+    land_use_column : str
+        Column containing land-use codes. Used to derive ``ip_type_column`` when
+        missing.
+    land_use_prefix_pattern : str
+        Regex pattern removed from land-use codes prior to normalisation.
     ip_type_column : str
         Column containing land-use type identifiers.
     ip_value_column : str
@@ -218,13 +225,33 @@ def _build_ip_value_lookup(
     ValueError
         If required columns are absent in ``base_gdf``.
     """
-    if ip_type_column not in base_gdf.columns:
-        raise ValueError(f"Column '{ip_type_column}' is missing in base_gdf.")
-    if ip_value_column not in base_gdf.columns:
-        raise ValueError(f"Column '{ip_value_column}' is missing in base_gdf.")
-
     working = base_gdf.copy()
-    working[ip_type_column] = working[ip_type_column].astype(str).str.lower()
+
+    if ip_type_column not in working.columns:
+        if land_use_column not in working.columns:
+            raise ValueError(
+                f"Columns '{ip_type_column}' or '{land_use_column}' are missing in base_gdf."
+            )
+        working[ip_type_column] = (
+            working[land_use_column]
+            .astype("string")
+            .str.replace(land_use_prefix_pattern, "", regex=True)
+        )
+
+    working[ip_type_column] = working[ip_type_column].astype("string").str.lower()
+    working = working.dropna(subset=[ip_type_column])
+    working = working[working[ip_type_column] != "none"]
+
+    if ip_value_column not in working.columns:
+        if "potential" in working.columns:
+            working[ip_value_column] = working["potential"]
+        else:
+            raise ValueError(
+                f"Column '{ip_value_column}' is missing in base_gdf."
+            )
+
+    working[ip_value_column] = pd.to_numeric(working[ip_value_column], errors="coerce")
+
     allowed = tuple(allowed_uses)
     if allowed:
         working = working[working[ip_type_column].isin(allowed)]
@@ -238,7 +265,7 @@ def _build_ip_value_lookup(
 
 def _prepare_with_base(
     polygon_gdf: gpd.GeoDataFrame,
-    base_gdf: gpd.GeoDataFrame,
+    base_gdf: gpd.GeoDataFrame | pd.DataFrame,
     *,
     keep_columns: Sequence[str] | None,
     allowed_uses: Iterable[str],
@@ -254,8 +281,10 @@ def _prepare_with_base(
     ----------
     polygon_gdf : geopandas.GeoDataFrame
         Scenario polygons containing at least geometry and land-use data.
-    base_gdf : geopandas.GeoDataFrame
-        Baseline potential dataset used to impute IP values.
+    base_gdf : geopandas.GeoDataFrame or pandas.DataFrame
+        Baseline potential dataset used to impute IP values. When provided as a
+        regular DataFrame, only tabular columns (such as ``land_use`` and
+        ``potential``) are required.
     keep_columns : Sequence[str] or None, optional
         Columns to retain from ``polygon_gdf`` (defaults to
         ``DEFAULT_SCENARIO_KEEP_COLUMNS``).
@@ -298,9 +327,9 @@ def _prepare_with_base(
 
     working = polygon_gdf.loc[:, ordered_columns].copy()
 
-    working[land_use_column] = (
+    land_use_normalised = (
         working[land_use_column]
-        .astype(str)
+        .astype("string")
         .str.replace(land_use_prefix_pattern, "", regex=True)
     )
 
@@ -308,7 +337,7 @@ def _prepare_with_base(
         mask = working[scenario_flag_column].fillna(False).astype(bool)
         working = working.loc[mask].reset_index(drop=True)
 
-    working[ip_type_column] = working[land_use_column].astype(str).str.lower()
+    working[ip_type_column] = land_use_normalised.str.lower()
     working = working[
         working[ip_type_column].notna() & (working[ip_type_column] != "none")
     ]
@@ -316,6 +345,8 @@ def _prepare_with_base(
     base_lookup = _build_ip_value_lookup(
         base_gdf,
         allowed_uses=allowed_uses,
+        land_use_column=land_use_column,
+        land_use_prefix_pattern=land_use_prefix_pattern,
         ip_type_column=ip_type_column,
         ip_value_column=ip_value_column,
     )
@@ -337,17 +368,18 @@ def prepare_investment_input(
     scenario_flag_column: str = "is_scn",
     land_use_prefix_pattern: str = r"^LandUse\.",
     ip_value_column: str = DEFAULT_IP_VALUE,
-) -> gpd.GeoDataFrame:
-    """Prepare a GeoDataFrame for investment-metrics calculation.
+) -> pd.DataFrame:
+    """Prepare scenario data for investment-metrics calculation.
 
     Parameters
     ----------
     gdf : geopandas.GeoDataFrame
         Scenario dataset to be normalised and validated.
     project_potential : geopandas.GeoDataFrame or pandas.DataFrame or None, optional
-        Baseline potential dataset used to impute IP values. When provided,
-        scenario polygons are filtered to ``scenario_flag_column == True`` and
-        joined with baseline IP values.
+        Baseline potential dataset used to impute IP values. Accepts either a
+        GeoDataFrame or a regular DataFrame with columns such as ``land_use`` and
+        ``potential``. When provided, scenario polygons are filtered to
+        ``scenario_flag_column == True`` and joined with baseline IP values.
     keep_columns : Sequence[str] or None, optional
         Columns to preserve when filtering scenario polygons.
     allowed_uses : Iterable[str] or None, optional
@@ -365,13 +397,20 @@ def prepare_investment_input(
 
     Returns
     -------
-    geopandas.GeoDataFrame
-        GeoDataFrame trimmed and ordered according to :data:`INPUT_SPEC`.
+    pandas.DataFrame
+        DataFrame ordered according to :data:`INPUT_SPEC`. Geometry is retained
+        as an object column when present.
     """
 
     polygon_gdf = _ensure_geodataframe(gdf)
     if project_potential is not None:
-        base_ready = _ensure_geodataframe(project_potential)
+        if isinstance(project_potential, gpd.GeoDataFrame):
+            base_ready = project_potential
+        elif isinstance(project_potential, pd.DataFrame):
+            base_ready = project_potential
+        else:
+            raise TypeError("project_potential must be a GeoDataFrame or DataFrame.")
+
         polygon_gdf = _prepare_with_base(
             polygon_gdf,
             base_ready,
@@ -384,7 +423,8 @@ def prepare_investment_input(
             ip_value_column=ip_value_column,
         )
 
-    return INPUT_SPEC.enforce(polygon_gdf)
+    prepared = INPUT_SPEC.enforce(polygon_gdf)
+    return pd.DataFrame(prepared)
 
 
 __all__ = [

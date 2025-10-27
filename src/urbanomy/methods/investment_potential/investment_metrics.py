@@ -343,7 +343,12 @@ class InvestmentAttractivenessAnalyzer:
             land_cost_total=land_cost_total,
         )
 
-    def _calculate_row_metrics(self, idx: Any, row: pd.Series) -> RowComputation:
+    def _calculate_row_metrics(
+        self,
+        idx: Any,
+        row: pd.Series,
+        default_discount_rate: float,
+    ) -> RowComputation:
         """Evaluate investment metrics for a single polygon row.
 
         Parameters
@@ -352,6 +357,8 @@ class InvestmentAttractivenessAnalyzer:
             Index label of the polygon.
         row : pandas.Series
             Polygon attributes enriched by prepared investment input.
+        default_discount_rate : float
+            Discount rate to use when the benchmark profile omits it.
 
         Returns
         -------
@@ -370,7 +377,7 @@ class InvestmentAttractivenessAnalyzer:
 
         profile = self._prepare_profile(row, self._benchmarks_enum[land_use_enum])
         cashflow = make_cashflow(land_use_enum.value, profile.land_area, profile.params)
-        discount_rate = profile.params.get("discount_rate", self.discount_rate)
+        discount_rate = profile.params.get("discount_rate", default_discount_rate)
 
         metrics = InvestmentMetricsResult.from_cashflow(cashflow, discount_rate)
 
@@ -497,14 +504,20 @@ class InvestmentAttractivenessAnalyzer:
 
     def calculate_investment_metrics(
         self,
-        gdf: gpd.GeoDataFrame,
+        gdf: gpd.GeoDataFrame | pd.DataFrame,
+        discount_rate: float | None = None,
     ) -> pd.DataFrame:
         """Return a per-land-use summary of investment metrics.
 
         Parameters
         ----------
-        gdf : geopandas.GeoDataFrame
-            Input dataset prepared with ``prepare_investment_input`` columns.
+        gdf : geopandas.GeoDataFrame or pandas.DataFrame
+            Input dataset containing scenario polygons or the output of
+            :func:`prepare_investment_input`.
+        discount_rate : float or None, optional
+            Discount rate to use when benchmark profiles omit one. Falls back to
+            the analyzer's configured rate (and ultimately
+            ``DEFAULT_DISCOUNT_RATE``) when ``None``.
 
         Returns
         -------
@@ -521,11 +534,17 @@ class InvestmentAttractivenessAnalyzer:
             print("No polygons provided; summary is empty.")
             return pd.DataFrame(columns=SUMMARY_COLUMNS)
 
-        working = prepare_investment_input(gdf)
+        needs_preparation = isinstance(gdf, gpd.GeoDataFrame) or "geometry" in gdf.columns
+        working = prepare_investment_input(gdf) if needs_preparation else gdf.copy()
+        base_discount_rate = (
+            float(discount_rate)
+            if discount_rate is not None
+            else float(self.discount_rate)
+        )
         self._coerce_numeric_columns(working, INVESTMENT_NUMERIC_COLUMNS)
 
         row_results = [
-            self._calculate_row_metrics(idx, row)
+            self._calculate_row_metrics(idx, row, base_discount_rate)
             for idx, row in working.iterrows()
         ]
 
@@ -594,7 +613,7 @@ class InvestmentAttractivenessAnalyzer:
 
         project_cf = self._aggregate_cashflows(result.cashflow for result in row_results)
         project_metrics = (
-            InvestmentMetricsResult.from_cashflow(project_cf, self.discount_rate)
+            InvestmentMetricsResult.from_cashflow(project_cf, base_discount_rate)
             if project_cf
             else None
         )

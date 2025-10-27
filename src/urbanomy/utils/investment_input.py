@@ -143,7 +143,6 @@ INPUT_SPEC = InvestmentInputSpec(
         "non_living_area",
         "build_floor_area",
         "share",
-        "price_per_sotka",
         DEFAULT_IP_VALUE,
     ),
     defaults={
@@ -152,7 +151,6 @@ INPUT_SPEC = InvestmentInputSpec(
         "non_living_area": 0.0,
         "build_floor_area": 0.0,
         "share": 1.0,
-        "price_per_sotka": 0.0,
         DEFAULT_IP_VALUE: 0.0,
     },
 )
@@ -398,8 +396,8 @@ def prepare_investment_input(
     Returns
     -------
     pandas.DataFrame
-        DataFrame ordered according to :data:`INPUT_SPEC`. Geometry is retained
-        as an object column when present.
+        DataFrame ordered according to :data:`INPUT_SPEC` with the geometry
+        column removed.
     """
 
     polygon_gdf = _ensure_geodataframe(gdf)
@@ -424,6 +422,9 @@ def prepare_investment_input(
         )
 
     prepared = INPUT_SPEC.enforce(polygon_gdf)
+    geometry_column = prepared.geometry.name if hasattr(prepared, "geometry") else None
+    if geometry_column and geometry_column in prepared.columns:
+        prepared = prepared.drop(columns=geometry_column)
     return pd.DataFrame(prepared)
 
 

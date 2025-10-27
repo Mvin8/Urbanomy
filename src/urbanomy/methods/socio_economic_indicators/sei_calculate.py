@@ -1,19 +1,28 @@
-import pandas as pd
 import numpy as np
-from typing import Dict, Any, Optional
+import pandas as pd
+from typing import Any, Dict, Optional
 
 from blocksnet.enums import LandUse
 
-from .constants import DEFAULT_SER_PARAMETERS
+from .constants import (
+    DEFAULT_AMORTIZATION_RATES,
+    DEFAULT_JOBS_PER_M2,
+    DEFAULT_PROFIT_SHARE_OPS,
+    DEFAULT_SER_PARAMETERS,
+    DEFAULT_TAX_RATES,
+    DEFAULT_VA_PER_M2_OPS,
+    DEFAULT_WAGE_BY_USE,
+    FALLBACK_CAPEX_CAPITALIZABLE_SHARE,
+)
 
 class SEREstimator:
     """Socio-economic results estimator with configurable defaults.
 
     The estimator evaluates project contribution deltas for five headline
     indicators during the construction and operational phases. Baseline
-    parameters (population, employment base) must be supplied, while all other
-    knobs fall back to safe expert defaults—including ``avg_wage_base``—that
-    can be overridden when needed.
+    parameters (population, employment base, build years) must be supplied,
+    while all other knobs fall back to safe expert defaults—including
+    ``avg_wage_base``—that can be overridden when needed.
     """
 
     # --- дефолтные параметры экспертных оценок ---
@@ -25,18 +34,18 @@ class SEREstimator:
         Parameters
         ----------
         params : dict
-            Configuration dictionary. Must include the keys ``population``
-            and ``employment_base``. Any default stored in
+            Configuration dictionary. Must include the keys ``population``,
+            ``employment_base`` и ``build_years``. Any default stored in
             ``DEFAULT_SER_PARAMETERS`` (including ``avg_wage_base``) can be
-            overridden by providing the
-            corresponding key (nested dictionaries are merged recursively).
+            overridden by providing the corresponding key (nested dictionaries
+            are merged recursively).
 
         Raises
         ------
         ValueError
             If any of the mandatory baseline keys are absent.
         """
-        need = ['population', 'employment_base']
+        need = ['population', 'employment_base', 'build_years']
         missing = [k for k in need if k not in params]
         if missing:
             raise ValueError(f"Missing required parameters: {missing}")
@@ -124,11 +133,11 @@ class SEREstimator:
         Emp_base = int(c['employment_base'])
         W_base   = float(c['avg_wage_base'])
 
-        T_build  = int(c.get('build_years', 1))
-        pit = float(c['tax_rates'].get('pit', 0.13))
-        cit = float(c['tax_rates'].get('cit', 0.17))
-        prop = float(c['tax_rates'].get('prop', 0.02))
-        land_tax = float(c['tax_rates'].get('land', 0.0))
+        T_build  = int(c['build_years'])
+        pit = float(c['tax_rates'].get('pit', DEFAULT_TAX_RATES['pit']))
+        cit = float(c['tax_rates'].get('cit', DEFAULT_TAX_RATES['cit']))
+        prop = float(c['tax_rates'].get('prop', DEFAULT_TAX_RATES['prop']))
+        land_tax = float(c['tax_rates'].get('land', DEFAULT_TAX_RATES.get('land', 0.0)))
 
         d = df.copy()
         numeric_cols = ['built_area', 'investment_need', 'land_cost', 'land_cost_before']
@@ -160,7 +169,9 @@ class SEREstimator:
         delta_grp_pc_build = VA_build_annual / max(P, 1)
 
         # 2) Δ ВРП/душу — эксплуатация
-        g['y_m2'] = g['land_use'].apply(lambda u: self._get(c['va_per_m2_ops'], u, 0.0))
+        g['y_m2'] = g['land_use'].apply(
+            lambda u: self._get(c['va_per_m2_ops'], u, DEFAULT_VA_PER_M2_OPS['default'])
+        )
         VA_ops_annual = (g['A'] * g['y_m2']).sum()
         delta_grp_pc_ops = VA_ops_annual / max(P, 1)
 
@@ -171,15 +182,27 @@ class SEREstimator:
         delta_budget_build = PIT_build_annual + CIT_build_annual
 
         # 3) Δ Доходы бюджета — эксплуатация
-        g['jobs_m2'] = g['land_use'].apply(lambda u: self._get(c['jobs_per_m2'], u, 0.0))
+        g['jobs_m2'] = g['land_use'].apply(
+            lambda u: self._get(c['jobs_per_m2'], u, DEFAULT_JOBS_PER_M2['default'])
+        )
         g['jobs']    = g['A'] * g['jobs_m2']
-        g['wage']    = g['land_use'].apply(lambda u: self._get(c['wage_by_use'], u, 0.0))
+        g['wage']    = g['land_use'].apply(
+            lambda u: self._get(c['wage_by_use'], u, DEFAULT_WAGE_BY_USE['default'])
+        )
         PIT_ops_annual = (g['jobs'] * g['wage'] * 12).sum() * pit
 
-        g['profit_sh'] = g['land_use'].apply(lambda u: self._get(c['profit_share_ops'], u, 0.0))
+        g['profit_sh'] = g['land_use'].apply(
+            lambda u: self._get(c['profit_share_ops'], u, DEFAULT_PROFIT_SHARE_OPS['default'])
+        )
         CIT_ops_annual = (g['A'] * g['y_m2'] * g['profit_sh']).sum() * cit
 
-        g['cap_share'] = g['land_use'].apply(lambda u: self._get(c['capex_capitalizable_share'], u, 1.0))
+        g['cap_share'] = g['land_use'].apply(
+            lambda u: self._get(
+                c['capex_capitalizable_share'],
+                u,
+                FALLBACK_CAPEX_CAPITALIZABLE_SHARE,
+            )
+        )
         FA_add = (g['I'] * g['cap_share']).sum()
         Property_tax_annual = FA_add * prop
 
@@ -202,7 +225,9 @@ class SEREstimator:
             delta_wage = 0.0
 
         # 5) Δ Износ (тыс. руб.) — годовая амортизация новых ОС
-        g['a'] = g['land_use'].apply(lambda u: self._get(c['amortization_rates'], u, 0.03))
+        g['a'] = g['land_use'].apply(
+            lambda u: self._get(c['amortization_rates'], u, DEFAULT_AMORTIZATION_RATES['default'])
+        )
         Dep_add_annual = (g['I'] * g['cap_share'] * g['a']).sum()
         delta_wear_thousand_rub = Dep_add_annual / 1_000.0
 

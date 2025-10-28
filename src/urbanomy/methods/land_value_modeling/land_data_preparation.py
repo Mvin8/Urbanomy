@@ -13,14 +13,13 @@ from blocksnet.analysis.morphotypes import get_strelka_morphotypes
 from blocksnet.config import log_config
 from blocksnet.enums import LandUse
 from blocksnet.machine_learning.regression import DensityRegressor
-from blocksnet.relations import generate_adjacency_graph
+from blocksnet.relations import calculate_distance_matrix, generate_adjacency_graph
 
 from . import constants as _constants
-from .constants import BlockColumn
+from .constants import ACCESSIBILITY_SPEED, BlockColumn
 
 DataFrameLike = Union[pd.DataFrame, gpd.GeoDataFrame]
 BlocksInput = Union[BinaryIO, DataFrameLike]
-AccessibilityInput = Union[BinaryIO, pd.DataFrame]
 
 
 class LandDataPreparator:
@@ -32,7 +31,6 @@ class LandDataPreparator:
         self,
         scenario_blocks_source: BlocksInput,
         context_blocks_source: BlocksInput,
-        accessibility_matrix_source: AccessibilityInput,
         *,
         adjacency_radius: float = _constants.DEFAULT_ADJACENCY_RADIUS,
         sqm_per_person: float = _constants.DEFAULT_SQM_PER_PERSON,
@@ -47,8 +45,6 @@ class LandDataPreparator:
             Base source representing scenario blocks.
         context_blocks_source : BlocksInput
             Base source representing context blocks.
-        accessibility_matrix_source : AccessibilityInput
-            Source providing the area accessibility matrix.
         adjacency_radius : float, optional
             Radius (metres) for adjacency graph construction.
         sqm_per_person : float, optional
@@ -61,12 +57,10 @@ class LandDataPreparator:
         """
         self._scenario_source = scenario_blocks_source
         self._context_source = context_blocks_source
-        self._accessibility_source = accessibility_matrix_source
         self.adjacency_radius = adjacency_radius
         self.sqm_per_person = sqm_per_person
         self.output_columns = list(output_columns) if output_columns else list(self.DEFAULT_OUTPUT_COLUMNS)
         self._density_regressor = DensityRegressor()
-        self._accessibility_cache: Optional[pd.DataFrame] = None
         self._last_prepared: Optional[gpd.GeoDataFrame] = None
         self._log_level = log_level
 
@@ -105,7 +99,6 @@ class LandDataPreparator:
         self,
         scenario_blocks: Optional[BlocksInput] = None,
         context_blocks: Optional[BlocksInput] = None,
-        accessibility_matrix: Optional[AccessibilityInput] = None,
     ) -> gpd.GeoDataFrame:
         """Prepare scenario and context blocks with engineered features.
 
@@ -117,9 +110,6 @@ class LandDataPreparator:
         context_blocks : BlocksInput, optional
             Context blocks override. Falls back to ``context_blocks_source``
             when omitted.
-        accessibility_matrix : AccessibilityInput, optional
-            Accessibility matrix override. Falls back to the cached source
-            matrix when omitted.
 
         Returns
         -------
@@ -136,7 +126,7 @@ class LandDataPreparator:
             density_df = self._calculate_density(blocks, adjacency_graph)
             self._attach_development_indicators(blocks, density_df)
             self._append_morphotypes(blocks)
-            self._append_accessibility(blocks, accessibility_matrix)
+            self._append_accessibility(blocks)
             prepared = self._cleanup(blocks)
             prepared['id'] = prepared.index
 
@@ -396,65 +386,37 @@ class LandDataPreparator:
     def _append_accessibility(
         self,
         blocks: gpd.GeoDataFrame,
-        accessibility_matrix: Optional[AccessibilityInput],
     ) -> None:
         """Attach area accessibility metrics to blocks in-place.
 
         Parameters
         ----------
         blocks : geopandas.GeoDataFrame
-            Blocks dataset being enriched with accessibility metrics.
-        accessibility_matrix : AccessibilityInput, optional
-            Optional override for the accessibility matrix source.
+            Blocks dataset being enriched with accessibility metrics. The
+            accessibility matrix is derived from block-to-block travel times.
         """
-        matrix = (
-            self._resolve_accessibility_input(accessibility_matrix)
-            if accessibility_matrix is not None
-            else self._load_accessibility_matrix()
-        )
+        matrix = self._compute_accessibility_matrix(blocks)
         area_acc = area_accessibility(matrix, blocks)
         blocks.loc[:, area_acc.columns] = area_acc
 
-    def _load_accessibility_matrix(self) -> pd.DataFrame:
-        """Load or reuse the cached accessibility matrix.
+    def _compute_accessibility_matrix(self, blocks: gpd.GeoDataFrame) -> pd.DataFrame:
+        """Calculate a travel-time accessibility matrix for the given blocks."""
+        if blocks.empty:
+            return pd.DataFrame(index=blocks.index, columns=blocks.index, dtype=float)
 
-        Returns
-        -------
-        pandas.DataFrame
-            Accessibility matrix suitable for ``area_accessibility``.
-        """
-        if self._accessibility_cache is None:
-            self._accessibility_cache = self._resolve_accessibility_input(self._accessibility_source)
-        return self._accessibility_cache.copy()
+        projected_blocks = blocks
+        utm_crs = blocks.estimate_utm_crs()
+        if utm_crs:
+            projected_blocks = blocks.to_crs(utm_crs)
 
-    @staticmethod
-    def _resolve_accessibility_input(source: AccessibilityInput) -> pd.DataFrame:
-        """Convert an accessibility input into a DataFrame.
-
-        Parameters
-        ----------
-        source : AccessibilityInput
-            DataFrame or binary stream containing pickled accessibility data.
-
-        Returns
-        -------
-        pandas.DataFrame
-            Copy of the accessibility matrix.
-
-        Raises
-        ------
-        TypeError
-            If the source cannot be interpreted as a DataFrame.
-        """
-        if isinstance(source, pd.DataFrame):
-            return source.copy()
-        if hasattr(source, 'read'):
-            binary_source = LandDataPreparator._reset_stream(source)
-            loaded = pd.read_pickle(binary_source)
-            if not isinstance(loaded, pd.DataFrame):
-                raise TypeError("Expected the accessibility payload to be a pandas DataFrame.")
-            return loaded
-        raise TypeError("Expected a pandas DataFrame or a binary stream with an accessibility matrix.")
+        distance_matrix = calculate_distance_matrix(projected_blocks)
+        if not isinstance(distance_matrix, pd.DataFrame):
+            distance_matrix = pd.DataFrame(
+                distance_matrix,
+                index=blocks.index,
+                columns=blocks.index,
+            )
+        return distance_matrix // ACCESSIBILITY_SPEED
 
     def _cleanup(self, blocks: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
         """Remove intermediate columns and enforce output ordering.

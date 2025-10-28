@@ -45,7 +45,6 @@ Land-value modelling
 ~~~~~~~~~~~~~~~~~~~~
 .. code-block:: python
 
-   import pandas as pd
    import geopandas as gpd
    from catboost import CatBoostRegressor
    from urbanomy.methods.land_value_modeling import (
@@ -56,12 +55,10 @@ Land-value modelling
 
    scenario = gpd.read_file("data/scenario_blocks.geojson")
    context = gpd.read_file("data/context_blocks.geojson")
-   accessibility = pd.read_pickle("data/accessibility.pkl")
-
+   # Accessibility matrix is computed automatically assuming 5 km/h travel speed.
    preparator = LandDataPreparator(
        scenario_blocks_source=scenario,
        context_blocks_source=context,
-       accessibility_matrix_source=accessibility,
    )
    prepared_blocks = preparator.prepare()
 

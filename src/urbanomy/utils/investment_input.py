@@ -17,6 +17,7 @@ DEFAULT_IP_VALUE: str = "ip_value"
 
 INVESTMENT_NUMERIC_COLUMNS: tuple[str, ...] = (
     "price_pred",
+    "price_pred_before",
     "price_per_sotka",
     "site_area",
     "living_area",
@@ -29,6 +30,7 @@ INVESTMENT_NUMERIC_COLUMNS: tuple[str, ...] = (
 DEFAULT_SCENARIO_KEEP_COLUMNS: tuple[str, ...] = (
     "y_log_pred",
     "price_pred",
+    "price_pred_before",
     "price_per_sotka",
     "is_scn",
     "residential",
@@ -139,6 +141,7 @@ class InvestmentInputSpec:
 INPUT_SPEC = InvestmentInputSpec(
     required=("land_use", "price_pred"),
     optional=(
+        "price_pred_before",
         "site_area",
         "living_area",
         "non_living_area",
@@ -147,6 +150,7 @@ INPUT_SPEC = InvestmentInputSpec(
         DEFAULT_IP_VALUE,
     ),
     defaults={
+        "price_pred_before": 0.0,
         "site_area": 0.0,
         "living_area": 0.0,
         "non_living_area": 0.0,
@@ -338,15 +342,16 @@ def _prepare_with_base(
 
     working[ip_type_column] = land_use_normalised.str.lower()
     invalid_mask = working[ip_type_column].isna() | (working[ip_type_column] == "none")
-    dropped = int(invalid_mask.sum())
-    if dropped:
+    missing_count = int(invalid_mask.sum())
+    if missing_count:
         total = int(len(working))
         logger.warning(
-            "prepare_investment_input: dropped {} of {} scenario polygons due to missing land-use after normalisation.",
-            dropped,
+            "prepare_investment_input: у {} из {} кварталов нет land-use после нормализации; "
+            "они остаются в наборе и будут обработаны на следующем этапе.",
+            missing_count,
             total,
         )
-    working = working[~invalid_mask]
+        working.loc[invalid_mask, ip_type_column] = pd.NA
 
     base_lookup = _build_ip_value_lookup(
         base_gdf,
@@ -428,6 +433,20 @@ def prepare_investment_input(
             land_use_prefix_pattern=land_use_prefix_pattern,
             ip_value_column=ip_value_column,
         )
+
+    polygon_gdf["price_pred"] = pd.to_numeric(
+        polygon_gdf.get("price_pred"), errors="coerce"
+    )
+    if "price_pred_before" in polygon_gdf.columns:
+        polygon_gdf["price_pred_before"] = pd.to_numeric(
+            polygon_gdf["price_pred_before"], errors="coerce"
+        )
+    else:
+        logger.warning(
+            "prepare_investment_input: колонка 'price_pred_before' не найдена; "
+            "значения скопированы из 'price_pred'."
+        )
+        polygon_gdf["price_pred_before"] = polygon_gdf["price_pred"]
 
     prepared = INPUT_SPEC.enforce(polygon_gdf)
     geometry_column = prepared.geometry.name if hasattr(prepared, "geometry") else None

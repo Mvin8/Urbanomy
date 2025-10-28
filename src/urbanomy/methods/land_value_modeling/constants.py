@@ -52,6 +52,10 @@ DEFAULT_SQM_PER_PERSON: float = 20.0
 """Default number of square metres per person when estimating population."""
 
 
+ACCESSIBILITY_SPEED: float = 5 * 1_000 / 60
+"""Walking speed (metres per minute) assumed when computing accessibility."""
+
+
 class BlockColumn(str, Enum):
     """Canonical column identifiers used across land value workflows."""
 

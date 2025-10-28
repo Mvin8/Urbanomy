@@ -140,6 +140,7 @@ DEFAULT_IP_VALUE: str = "ip_value"
 SUMMARY_COLUMNS: Final[tuple[str, ...]] = (
     "land_use",
     "land_area",
+    "land_purchase_price",
     "built_area",
     "land_cost",
     "construction_cost",

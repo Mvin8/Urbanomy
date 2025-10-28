@@ -70,7 +70,7 @@ Land-value modelling
 
    estimator = LandPriceEstimator(model=model, blocks=prepared_blocks)
    price_map = estimator.predict()
-   plot_land_price_maps(blocks_pred=price_map, scenario_blocks=scenario)
+   plot_land_price_maps(blocks_pred=price_map)
 
 .. figure:: docs/img/1_pricing_model.png
    :alt: Training the land-price model with spatial lags

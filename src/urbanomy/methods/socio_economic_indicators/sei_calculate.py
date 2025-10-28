@@ -6,7 +6,7 @@ import pandas as pd
 
 from blocksnet.enums import LandUse
 
-from .constants import (
+from urbanomy.methods.socio_economic_indicators.constants import (
     DEFAULT_AMORTIZATION_RATES,
     DEFAULT_JOBS_PER_M2,
     DEFAULT_PROFIT_SHARE_OPS,

@@ -7,7 +7,7 @@ from .constants import (
     RADIUS_LIST,
 )
 from .land_data_preparation import LandDataPreparator
-from .land_price_estimation import LandPriceEstimator
+from .land_price_estimation import LandPriceEstimator, transfer_baseline_prices
 from .land_price_visualization import plot_land_price_maps
 from .scenario_modification import ScenarioTEPModifier, plot_scenario_impact
 
@@ -20,6 +20,7 @@ __all__ = [
     "RADIUS_LIST",
     "LandDataPreparator",
     "LandPriceEstimator",
+    "transfer_baseline_prices",
     "plot_land_price_maps",
     "ScenarioTEPModifier",
     "plot_scenario_impact",

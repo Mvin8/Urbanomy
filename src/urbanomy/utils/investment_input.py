@@ -7,6 +7,7 @@ from typing import Iterable, Mapping, Sequence
 
 import geopandas as gpd
 import pandas as pd
+from loguru import logger
 
 # ``urbanomy.methods.investment_potential.constants.DEFAULT_IP_VALUE`` uses the
 # same literal value ("ip_value"); duplicating it here avoids an import cycle
@@ -336,9 +337,16 @@ def _prepare_with_base(
         working = working.loc[mask].reset_index(drop=True)
 
     working[ip_type_column] = land_use_normalised.str.lower()
-    working = working[
-        working[ip_type_column].notna() & (working[ip_type_column] != "none")
-    ]
+    invalid_mask = working[ip_type_column].isna() | (working[ip_type_column] == "none")
+    dropped = int(invalid_mask.sum())
+    if dropped:
+        total = int(len(working))
+        logger.warning(
+            "prepare_investment_input: dropped {} of {} scenario polygons due to missing land-use after normalisation.",
+            dropped,
+            total,
+        )
+    working = working[~invalid_mask]
 
     base_lookup = _build_ip_value_lookup(
         base_gdf,

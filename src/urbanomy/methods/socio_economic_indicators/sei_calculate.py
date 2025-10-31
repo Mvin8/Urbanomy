@@ -1,5 +1,5 @@
 from copy import deepcopy
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Sequence
 
 import numpy as np
 import pandas as pd
@@ -22,11 +22,11 @@ class SEREstimator:
 
     Notes
     -----
-    The estimator evaluates project contribution deltas for five headline
-    indicators during the construction and operational phases. Baseline
-    parameters (population, employment base, build years) must be supplied,
-    while the remaining parameters fall back to expert defaults—including
-    ``avg_wage_base``—that end users may override.
+    The estimator evaluates aggregate project contribution deltas for five
+    headline indicators, combining one-off construction effects with the
+    operational phase. Baseline parameters (population, employment base) must
+    be supplied, while the remaining parameters fall back to expert defaults—
+    including ``avg_wage_base``—that end users may override.
     """
 
     # --- default expert assessment parameters ---
@@ -63,18 +63,17 @@ class SEREstimator:
         Parameters
         ----------
         params : dict
-            Configuration dictionary. Must include the keys ``population``,
-            ``employment_base`` and ``build_years``. Any default stored in
-            ``DEFAULT_SER_PARAMETERS`` (including ``avg_wage_base``) can be
-            overridden by providing the corresponding key. Nested dictionaries
-            are merged recursively.
+            Configuration dictionary. Must include the keys ``population`` and
+            ``employment_base``. Any default stored in ``DEFAULT_SER_PARAMETERS``
+            (including ``avg_wage_base``) can be overridden by providing the
+            corresponding key. Nested dictionaries are merged recursively.
 
         Raises
         ------
         ValueError
             If any of the mandatory baseline keys are absent.
         """
-        need = ['population', 'employment_base', 'build_years']
+        need = ['population', 'employment_base']
         missing = [k for k in need if k not in params]
         if missing:
             raise ValueError(f"Missing required parameters: {missing}")
@@ -155,16 +154,35 @@ class SEREstimator:
             optional land-cost information.
         """
         data = df.copy()
-        numeric_cols = ['built_area', 'investment_need', 'land_cost', 'land_cost_before']
+        numeric_cols = [
+            'built_area',
+            'construction_cost',
+            'investment_need',
+            'land_cost',
+            'land_purchase_price',
+            'land_cost_before',
+        ]
         for col in numeric_cols:
             if col in data.columns:
                 data[col] = pd.to_numeric(data[col], errors='coerce').fillna(0.0)
-        if 'land_cost' in data.columns and 'land_cost_before' not in data.columns:
+        if 'construction_cost' not in data.columns:
+            if 'investment_need' in data.columns:
+                data['construction_cost'] = data['investment_need']
+            else:
+                raise KeyError("Input data must contain a 'construction_cost' column.")
+        elif 'investment_need' in data.columns:
+            inv = data['investment_need'].fillna(0.0)
+            data['construction_cost'] = data['construction_cost'].where(
+                data['construction_cost'] > 0, inv
+            )
+        if 'land_purchase_price' in data.columns:
+            data['land_cost_before'] = data['land_purchase_price']
+        elif 'land_cost' in data.columns and 'land_cost_before' not in data.columns:
             data['land_cost_before'] = data['land_cost']
         data['land_use'] = data['land_use'].apply(self._normalise_land_use_label)
 
         aggregation: Dict[str, Any] = {
-            'I': ('investment_need', 'sum'),
+            'I': ('construction_cost', 'sum'),
             'A': ('built_area', 'sum'),
         }
         if 'land_cost' in data.columns:
@@ -269,13 +287,15 @@ class SEREstimator:
         else:
             return SEREstimator._format_with_space_grouping(v, 4)
 
-    def _format_pretty(self, df: pd.DataFrame) -> pd.DataFrame:
+    def _format_pretty(self, df: pd.DataFrame, columns: Sequence[str]) -> pd.DataFrame:
         """Apply human-friendly formatting to result columns.
 
         Parameters
         ----------
         df : pandas.DataFrame
             Computed indicators in numeric form.
+        columns : Sequence[str]
+            Result columns that should receive pretty formatting.
 
         Returns
         -------
@@ -283,19 +303,20 @@ class SEREstimator:
             Same structure with formatted string values.
         """
         formatted = df.copy()
-        for col in ['delta_build_year', 'delta_ops_year']:
+        for col in columns:
             formatted[col] = formatted[col].map(self._fmt)
         return formatted
 
     def compute(self, df: pd.DataFrame, pretty: bool = True) -> pd.DataFrame:
-        """Calculate socio-economic deltas for construction and operation.
+        """Calculate socio-economic deltas aggregated for the project.
 
         Parameters
         ----------
         df : pandas.DataFrame
             Project blocks with at least ``land_use``, ``built_area`` and
-            ``investment_need`` columns. Optional land valuation columns are
-            recognised when present.
+            ``construction_cost`` (falls back to ``investment_need`` for
+            compatibility). Optional land valuation columns are recognised
+            when present.
         pretty : bool, optional
             Format numeric results as human-readable strings. The default is
             ``True``.
@@ -303,16 +324,16 @@ class SEREstimator:
         Returns
         -------
         pandas.DataFrame
-            Table with columns ``indicator``, ``delta_build_year`` and
-            ``delta_ops_year`` containing the five key metrics.
+            Table with columns ``indicator`` and ``delta_total`` containing
+            the five key metrics, where construction effects are treated as
+            one-off project contributions and operational effects remain
+            annual.
         """
         c = self.cfg
         population = int(c['population'])
         employment_base = int(c['employment_base'])
         wage_base = float(c['avg_wage_base'])
 
-        build_years = int(c['build_years'])
-        build_years_safe = build_years if build_years > 0 else 1
         population_safe = population if population > 0 else 1
         pit = float(c['tax_rates'].get('pit', DEFAULT_TAX_RATES['pit']))
         cit = float(c['tax_rates'].get('cit', DEFAULT_TAX_RATES['cit']))
@@ -321,28 +342,26 @@ class SEREstimator:
 
         g = self._prepare_land_use_aggregates(df)
 
-        # Metric 1: Delta investment in fixed capital per capita during construction
+        # Metric 1: Delta investment in fixed capital per capita (project scope)
         i_total = g['I'].sum()
-        delta_invcap_pc_build = i_total / population_safe
+        delta_invcap_pc_total = i_total / population_safe
 
-        # Metric 2: Delta gross regional product per capita during construction
+        # Metric 2: Delta gross regional product per capita
         self._assign_land_use_metric(g, 'k_va_build', c.get('va_coeff_build', {}), 0.0)
-        va_build_annual = (g['I'] * g['k_va_build']).sum() / build_years_safe
-        delta_grp_pc_build = va_build_annual / population_safe
+        va_build_total = (g['I'] * g['k_va_build']).sum()
+        delta_grp_pc_build = va_build_total / population_safe
 
-        # Metric 2 continued: Delta gross regional product per capita during operations
         self._assign_land_use_metric(g, 'y_m2', c.get('va_per_m2_ops', {}), DEFAULT_VA_PER_M2_OPS['default'])
         va_ops_annual = (g['A'] * g['y_m2']).sum()
         delta_grp_pc_ops = va_ops_annual / population_safe
+        delta_grp_pc_project = delta_grp_pc_build + delta_grp_pc_ops
 
-        # Metric 3: Delta budget revenues during construction
-        investment_annual = i_total / build_years_safe
-        w_build_annual = investment_annual * float(c['build_wage_share'])
-        pit_build_annual = w_build_annual * 12 * pit
-        cit_build_annual = investment_annual * float(c['build_profit_margin']) * cit
-        delta_budget_build = pit_build_annual + cit_build_annual
+        # Metric 3: Delta budget revenues
+        wages_build_total = i_total * float(c['build_wage_share'])
+        pit_build_total = wages_build_total * 12 * pit
+        cit_build_total = i_total * float(c['build_profit_margin']) * cit
+        delta_budget_build = pit_build_total + cit_build_total
 
-        # Metric 3 continued: Delta budget revenues during operations
         self._assign_land_use_metric(g, 'jobs_m2', c.get('jobs_per_m2', {}), DEFAULT_JOBS_PER_M2['default'])
         g['jobs'] = g['A'] * g['jobs_m2']
         self._assign_land_use_metric(g, 'wage', c.get('wage_by_use', {}), DEFAULT_WAGE_BY_USE['default'])
@@ -362,6 +381,7 @@ class SEREstimator:
 
         land_tax_delta = self._land_tax_delta(g, land_tax)
         delta_budget_ops = pit_ops_annual + cit_ops_annual + property_tax_annual + land_tax_delta
+        delta_budget_total = delta_budget_build + delta_budget_ops
 
         # Metric 4: Delta average wage during operations
         jobs_new = g['jobs'].sum()
@@ -377,15 +397,15 @@ class SEREstimator:
         dep_add_annual = (g['I'] * g['cap_share'] * g['a']).sum()
         delta_wear_thousand_rub = dep_add_annual / 1_000.0
 
-        out = pd.DataFrame(
+        results = pd.DataFrame(
             [
-                ["Объём инвестиций в основной капитал на душу населения", delta_invcap_pc_build, np.nan],
-                ["Валовый региональный продукт на душу населения", delta_grp_pc_build, delta_grp_pc_ops],
-                ["Доходы бюджета территории", delta_budget_build, delta_budget_ops],
-                ["Средний уровень заработной платы", np.nan, delta_wage],
-                ["Износ основного фонда (тыс. руб.)", np.nan, delta_wear_thousand_rub],
+                ["Объём инвестиций в основной капитал на душу населения", delta_invcap_pc_total],
+                ["Валовый региональный продукт на душу населения", delta_grp_pc_project],
+                ["Доходы бюджета территории", delta_budget_total],
+                ["Средний уровень заработной платы", delta_wage],
+                ["Износ основного фонда (тыс. руб.)", delta_wear_thousand_rub],
             ],
-            columns=['indicator', 'delta_build_year', 'delta_ops_year'],
+            columns=['indicator', 'delta_total'],
         )
 
-        return self._format_pretty(out) if pretty else out
+        return self._format_pretty(results, ['delta_total']) if pretty else results

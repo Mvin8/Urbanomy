@@ -17,7 +17,6 @@ def _value_map(
     return mapping
 
 
-DEFAULT_BUILD_YEARS: Final[int] = 3
 DEFAULT_AVG_WAGE_BASE: Final[float] = 70_430
 DEFAULT_TAX_RATES: Final[dict[str, float]] = {
     "pit": 0.13,
@@ -91,7 +90,6 @@ FALLBACK_CAPEX_CAPITALIZABLE_SHARE: Final[float] = 1.0
 
 
 DEFAULT_SER_PARAMETERS: Final[dict[str, object]] = {
-    "build_years": DEFAULT_BUILD_YEARS,
     "avg_wage_base": DEFAULT_AVG_WAGE_BASE,
     "tax_rates": dict(DEFAULT_TAX_RATES),
     "va_coeff_build": _value_map(

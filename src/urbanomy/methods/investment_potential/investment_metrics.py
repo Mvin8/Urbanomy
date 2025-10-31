@@ -309,7 +309,7 @@ class InvestmentAttractivenessAnalyzer:
             raise ValueError(f"Polygon {row.name} has no valid land area")
 
         land_cost_total = self._to_float(
-            row.get("price_pred_before", row.get("price_pred"))
+            row.get("price_pred", row.get("price_pred_before"))
         )
         if np.isfinite(land_cost_total) and land_area > 0:
             params["land_cost"] = land_cost_total / land_area

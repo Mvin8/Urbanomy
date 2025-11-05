@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 from typing import Any, Dict, Mapping, Sequence
+import warnings
 
 import geopandas as gpd
 import matplotlib.pyplot as plt
 import numpy as np
 from geopandas import GeoDataFrame
+from matplotlib.lines import Line2D
+from matplotlib.patches import Patch
 from matplotlib.transforms import offset_copy
 
 from blocksnet.enums import LandUse
@@ -163,6 +166,9 @@ def plot_scenario_impact(
     radius_list: Sequence[float] | None = None,
     eps: float = 1e-9,
     buffer_radius: float = 4000.0,
+    figsize: tuple[float, float] | None = None,
+    add_basemap: bool = True,
+    basemap_provider: str | None = "CartoDB.Positron",
     show: bool = True,
     print_summary: bool = True,
 ) -> Dict[str, object]:
@@ -191,6 +197,12 @@ def plot_scenario_impact(
         Threshold to decide whether the price change is significant.
     buffer_radius : float, default=4000.0
         Buffer radius (in metres) around the target block used to clip the map.
+    figsize : tuple[float, float], optional
+        Figure size passed to Matplotlib ``plt.subplots``.
+    add_basemap : bool, default=True
+        Whether to draw a cartographic basemap under the scenario layers.
+    basemap_provider : str, optional
+        Name of the Contextily provider to use. Defaults to ``\"CartoDB.Positron\"``.
     show : bool, default=True
         Display the generated figure using Matplotlib.
     print_summary : bool, default=True
@@ -252,6 +264,9 @@ def plot_scenario_impact(
         target_geometry=blocks_before.loc[target_idx, "geometry"],
         vmin=vmin,
         vmax=vmax,
+        figsize=figsize,
+        add_basemap=add_basemap,
+        basemap_provider=basemap_provider,
         show=show,
     )
 
@@ -303,6 +318,51 @@ def _build_buffer(blocks: GeoDataFrame, target_idx: int, radius_m: float) -> Geo
     return gpd.GeoDataFrame(geometry=buf, crs=blocks.crs)
 
 
+def _resolve_basemap_provider(ctx_module, provider_name: str | None):
+    """Return a Contextily provider object compatible with the installed version."""
+    default = None
+    cartodb = getattr(ctx_module.providers, "CartoDB", None)
+    if cartodb is not None and hasattr(cartodb, "Positron"):
+        default = getattr(cartodb, "Positron")
+    if default is None:
+        try:
+            default = ctx_module.providers["CartoDB.Positron"]
+        except Exception:
+            default = None
+
+    if provider_name in (None, "", "default"):
+        return default
+
+    try:
+        return ctx_module.providers.normalize_provider(provider_name)
+    except AttributeError:
+        pass
+    except Exception:
+        if default is not None:
+            warnings.warn(
+                f"Не удалось использовать провайдера {provider_name!r}; использую CartoDB.Positron.",
+                stacklevel=3,
+            )
+            return default
+        raise
+
+    current = ctx_module.providers
+    for token in provider_name.split("."):
+        if hasattr(current, token):
+            current = getattr(current, token)
+        elif isinstance(current, dict) and token in current:
+            current = current[token]
+        else:
+            if default is not None:
+                warnings.warn(
+                    f"Не удалось распознать провайдера {provider_name!r}; использую CartoDB.Positron.",
+                    stacklevel=3,
+                )
+                return default
+            raise KeyError(provider_name)
+    return current
+
+
 def _plot_change_map(
     *,
     changed: GeoDataFrame,
@@ -310,6 +370,9 @@ def _plot_change_map(
     target_geometry,
     vmin: float,
     vmax: float,
+    figsize: tuple[float, float] | None,
+    add_basemap: bool,
+    basemap_provider: str | None,
     show: bool,
 ) -> plt.Figure:
     """Plot percentage price changes around the target block.
@@ -324,6 +387,12 @@ def _plot_change_map(
         Geometry of the focus block to outline.
     vmin, vmax : float
         Color scale bounds for percentage change.
+    figsize : tuple[float, float] | None
+        Optional figure size passed to ``plt.subplots``.
+    add_basemap : bool
+        Whether to draw a cartographic basemap under the map layers.
+    basemap_provider : str | None
+        Name of the Contextily provider to use for the basemap.
     show : bool
         Whether to render the Matplotlib figure immediately.
 
@@ -332,23 +401,94 @@ def _plot_change_map(
     matplotlib.figure.Figure
         Figure displaying the scenario impact map.
     """
-    fig, ax = plt.subplots(figsize=(35, 30))
-    if len(unchanged):
-        unchanged.plot(ax=ax, color="lightgrey", edgecolor="white", linewidth=0.3, zorder=1)
-    if len(changed):
-        changed.plot(
+    fig, ax = plt.subplots(figsize=figsize or (35, 30))
+    fig.subplots_adjust(left=0, right=1, top=1, bottom=0)
+    source_changed = changed.copy()
+    source_unchanged = unchanged.copy()
+
+    plot_changed = source_changed
+    plot_unchanged = source_unchanged
+    has_colorbar = False
+
+    base_crs = plot_changed.crs or plot_unchanged.crs
+    target_gdf = gpd.GeoDataFrame(geometry=[target_geometry], crs=base_crs)
+    plotting_crs = plot_changed.crs or plot_unchanged.crs or target_gdf.crs
+
+    if base_crs is not None:
+        if plot_changed.crs is None:
+            plot_changed = plot_changed.set_crs(base_crs, allow_override=True)
+        if plot_unchanged.crs is None:
+            plot_unchanged = plot_unchanged.set_crs(base_crs, allow_override=True)
+        if target_gdf.crs is None:
+            target_gdf = target_gdf.set_crs(base_crs, allow_override=True)
+
+    target_plot_gdf = target_gdf
+
+    ctx_module = None
+    provider_obj = None
+    basemap_enabled = False
+    if add_basemap:
+        if plotting_crs is None:
+            warnings.warn("Basemap disabled: CRS is undefined for the plot.", stacklevel=2)
+        else:
+            try:
+                import contextily as ctx
+
+                ctx_module = ctx
+                provider_obj = _resolve_basemap_provider(ctx, basemap_provider)
+                basemap_enabled = provider_obj is not None
+            except Exception as exc:
+                warnings.warn(f"Не удалось подготовить подложку карты: {exc}", stacklevel=2)
+
+    if basemap_enabled:
+        target_epsg = 3857
+        try:
+            if plot_changed.crs is not None:
+                plot_changed = plot_changed.to_crs(epsg=target_epsg)
+            if plot_unchanged.crs is not None:
+                plot_unchanged = plot_unchanged.to_crs(epsg=target_epsg)
+            if target_gdf.crs is not None:
+                target_plot_gdf = target_gdf.to_crs(epsg=target_epsg)
+            plotting_crs = (
+                plot_changed.crs or plot_unchanged.crs or target_plot_gdf.crs or plotting_crs
+            )
+        except Exception as exc:
+            warnings.warn(f"Не удалось перепроектировать данные для подложки: {exc}", stacklevel=2)
+            basemap_enabled = False
+            plot_changed = source_changed
+            plot_unchanged = source_unchanged
+            target_plot_gdf = gpd.GeoDataFrame(geometry=[target_geometry], crs=plotting_crs)
+            plotting_crs = plot_changed.crs or plot_unchanged.crs or target_plot_gdf.crs
+
+    if len(plot_unchanged):
+        plot_unchanged.plot(ax=ax, color="lightgrey", edgecolor="white", linewidth=0.3, zorder=1)
+    if len(plot_changed):
+        plot_changed.plot(
             ax=ax,
             column="d_pct",
             cmap="coolwarm",
             vmin=vmin,
             vmax=vmax,
             legend=True,
+            legend_kwds={
+                "label": "Изменение цены, %",
+                "orientation": "vertical",
+                "pad": 0.02,
+                "shrink": 0.7,
+            },
             edgecolor="black",
             linewidth=0.4,
             zorder=2,
         )
 
-        for _, row in changed.iterrows():
+        if len(fig.axes) > 1:
+            cbar_ax = fig.axes[-1]
+            cbar_ax.set_ylabel("Изменение цены, %", fontsize=20)
+            cbar_ax.tick_params(labelsize=14)
+            cbar_ax.set_position([0.92, 0.15, 0.025, 0.7])
+            has_colorbar = True
+
+        for _, row in plot_changed.iterrows():
             x, y = row.geometry.centroid.coords[0]
             ax.text(
                 x,
@@ -373,19 +513,173 @@ def _plot_change_map(
                 zorder=4,
             )
 
-    gpd.GeoDataFrame(geometry=[target_geometry], crs=changed.crs or unchanged.crs).boundary.plot(
+    xlim = ax.get_xlim()
+    ylim = ax.get_ylim()
+
+    if basemap_enabled and ctx_module is not None and provider_obj is not None:
+        try:
+            ctx_module.add_basemap(
+                ax,
+                source=provider_obj,
+                crs=plotting_crs,
+                attribution=False,
+                zorder=0,
+            )
+            ax.set_xlim(xlim)
+            ax.set_ylim(ylim)
+        except Exception as exc:
+            warnings.warn(f"Не удалось наложить подложку карты: {exc}", stacklevel=2)
+
+    target_plot_gdf.boundary.plot(
         ax=ax,
         edgecolor="red",
         linewidth=2.0,
         zorder=3,
     )
 
-    ax.set_title("Изменение цены в процентах (after − before)", pad=12)
+    legend_handles: list[object] = []
+    if len(plot_unchanged):
+        legend_handles.append(
+            Patch(
+                facecolor="lightgrey",
+                edgecolor="white",
+                linewidth=0.3,
+                label="Кварталы без существующих изменений",
+            )
+        )
+    if len(plot_changed):
+        legend_handles.append(
+            Patch(
+                facecolor="none",
+                edgecolor="black",
+                linewidth=0.4,
+                label="Кварталы с изменением цены",
+            )
+        )
+    legend_handles.append(
+        Line2D([0], [0], color="red", linewidth=2.0, label="Границы изменяемого квартала")
+    )
+    ax.legend(
+        handles=legend_handles,
+        loc="upper right",
+        frameon=True,
+        title="Обозначения",
+        title_fontsize=18,
+        prop={"size": 16},
+    )
+
+    if has_colorbar:
+        ax.set_position([0.02, 0.02, 0.88, 0.96])
+    else:
+        ax.set_position([0.02, 0.02, 0.96, 0.96])
+
+    _add_scale_bar(
+        ax=ax,
+        crs=plotting_crs,
+        label="Масштаб",
+    )
+
+    ax.set_title("Изменение цены в процентах (after − before)", pad=12, fontsize=30)
     ax.axis("off")
-    plt.tight_layout()
     if show:
         plt.show()
     return fig
+
+
+def _add_scale_bar(
+    *,
+    ax: plt.Axes,
+    crs,
+    label: str,
+    units: str = "м",
+    length: float | None = None,
+    location: tuple[float, float] = (0.08, 0.08),
+    linewidth: float = 4.0,
+) -> None:
+    """Draw a simple scale bar in the lower corner of the map."""
+    if not ax:
+        return
+
+    if hasattr(crs, "is_geographic") and crs.is_geographic:
+        ax.text(
+            0.02,
+            0.02,
+            "Масштаб недоступен (географическая проекция)",
+            transform=ax.transAxes,
+            fontsize=10,
+            va="bottom",
+            ha="left",
+            bbox=dict(facecolor="white", alpha=0.7, edgecolor="none"),
+        )
+        return
+
+    x_min, x_max = ax.get_xlim()
+    y_min, y_max = ax.get_ylim()
+    width = float(x_max - x_min)
+    height = float(y_max - y_min)
+    if width <= 0 or height <= 0:
+        return
+
+    candidates = (50, 100, 200, 250, 500, 1000, 2000, 5000, 10000, 20000)
+    target = width / 5.0
+    if not length:
+        length = max((cand for cand in candidates if cand <= target), default=candidates[0])
+        if length > target and len(candidates):
+            length = min(candidates, key=lambda cand: abs(cand - target))
+
+    x_start = x_min + width * location[0]
+    y_start = y_min + height * location[1]
+    segment_length = length / 2
+    baseline = y_start
+    tick_height = height * 0.02
+
+    ax.plot(
+        [x_start, x_start + length],
+        [baseline, baseline],
+        color="black",
+        linewidth=linewidth,
+        solid_capstyle="butt",
+        zorder=5,
+    )
+
+    tick_positions = (x_start, x_start + segment_length, x_start + length)
+    tick_labels = (
+        "0",
+        f"{int(round(segment_length))}",
+        f"{int(round(length))}",
+    )
+    for x_pos in tick_positions:
+        ax.plot(
+            [x_pos, x_pos],
+            [baseline, baseline + tick_height],
+            color="black",
+            linewidth=linewidth / 1.5,
+            zorder=6,
+        )
+
+    for label_text, x_pos in zip(tick_labels, tick_positions):
+        suffix = f" {units}" if x_pos == tick_positions[-1] else ""
+        ax.text(
+            x_pos,
+            baseline + tick_height * 1.4,
+            f"{label_text}{suffix}",
+            ha="center",
+            va="bottom",
+            fontsize=13,
+            bbox=dict(facecolor="white", alpha=0.8, edgecolor="none"),
+            zorder=7,
+        )
+
+    ax.text(
+        x_start,
+        baseline - tick_height * 1.8,
+        label,
+        ha="left",
+        va="top",
+        fontsize=13,
+        bbox=dict(facecolor="white", alpha=0.7, edgecolor="none"),
+        zorder=6,
+    )
 
 
 def _summarise_changes(gdf: GeoDataFrame) -> Dict[str, float]:

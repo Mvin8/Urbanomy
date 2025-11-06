@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from typing import Any, Dict, Mapping, Sequence
-import warnings
 
 import geopandas as gpd
 import matplotlib.pyplot as plt
@@ -167,8 +166,6 @@ def plot_scenario_impact(
     eps: float = 1e-9,
     buffer_radius: float = 4000.0,
     figsize: tuple[float, float] | None = None,
-    add_basemap: bool = True,
-    basemap_provider: str | None = "CartoDB.Positron",
     show: bool = True,
     print_summary: bool = True,
 ) -> Dict[str, object]:
@@ -199,10 +196,6 @@ def plot_scenario_impact(
         Buffer radius (in metres) around the target block used to clip the map.
     figsize : tuple[float, float], optional
         Figure size passed to Matplotlib ``plt.subplots``.
-    add_basemap : bool, default=True
-        Whether to draw a cartographic basemap under the scenario layers.
-    basemap_provider : str, optional
-        Name of the Contextily provider to use. Defaults to ``\"CartoDB.Positron\"``.
     show : bool, default=True
         Display the generated figure using Matplotlib.
     print_summary : bool, default=True
@@ -265,8 +258,6 @@ def plot_scenario_impact(
         vmin=vmin,
         vmax=vmax,
         figsize=figsize,
-        add_basemap=add_basemap,
-        basemap_provider=basemap_provider,
         show=show,
     )
 
@@ -318,51 +309,6 @@ def _build_buffer(blocks: GeoDataFrame, target_idx: int, radius_m: float) -> Geo
     return gpd.GeoDataFrame(geometry=buf, crs=blocks.crs)
 
 
-def _resolve_basemap_provider(ctx_module, provider_name: str | None):
-    """Return a Contextily provider object compatible with the installed version."""
-    default = None
-    cartodb = getattr(ctx_module.providers, "CartoDB", None)
-    if cartodb is not None and hasattr(cartodb, "Positron"):
-        default = getattr(cartodb, "Positron")
-    if default is None:
-        try:
-            default = ctx_module.providers["CartoDB.Positron"]
-        except Exception:
-            default = None
-
-    if provider_name in (None, "", "default"):
-        return default
-
-    try:
-        return ctx_module.providers.normalize_provider(provider_name)
-    except AttributeError:
-        pass
-    except Exception:
-        if default is not None:
-            warnings.warn(
-                f"Не удалось использовать провайдера {provider_name!r}; использую CartoDB.Positron.",
-                stacklevel=3,
-            )
-            return default
-        raise
-
-    current = ctx_module.providers
-    for token in provider_name.split("."):
-        if hasattr(current, token):
-            current = getattr(current, token)
-        elif isinstance(current, dict) and token in current:
-            current = current[token]
-        else:
-            if default is not None:
-                warnings.warn(
-                    f"Не удалось распознать провайдера {provider_name!r}; использую CartoDB.Positron.",
-                    stacklevel=3,
-                )
-                return default
-            raise KeyError(provider_name)
-    return current
-
-
 def _plot_change_map(
     *,
     changed: GeoDataFrame,
@@ -371,8 +317,6 @@ def _plot_change_map(
     vmin: float,
     vmax: float,
     figsize: tuple[float, float] | None,
-    add_basemap: bool,
-    basemap_provider: str | None,
     show: bool,
 ) -> plt.Figure:
     """Plot percentage price changes around the target block.
@@ -389,10 +333,6 @@ def _plot_change_map(
         Color scale bounds for percentage change.
     figsize : tuple[float, float] | None
         Optional figure size passed to ``plt.subplots``.
-    add_basemap : bool
-        Whether to draw a cartographic basemap under the map layers.
-    basemap_provider : str | None
-        Name of the Contextily provider to use for the basemap.
     show : bool
         Whether to render the Matplotlib figure immediately.
 
@@ -403,11 +343,8 @@ def _plot_change_map(
     """
     fig, ax = plt.subplots(figsize=figsize or (35, 30))
     fig.subplots_adjust(left=0, right=1, top=1, bottom=0)
-    source_changed = changed.copy()
-    source_unchanged = unchanged.copy()
-
-    plot_changed = source_changed
-    plot_unchanged = source_unchanged
+    plot_changed = changed.copy()
+    plot_unchanged = unchanged.copy()
     has_colorbar = False
 
     base_crs = plot_changed.crs or plot_unchanged.crs
@@ -423,42 +360,6 @@ def _plot_change_map(
             target_gdf = target_gdf.set_crs(base_crs, allow_override=True)
 
     target_plot_gdf = target_gdf
-
-    ctx_module = None
-    provider_obj = None
-    basemap_enabled = False
-    if add_basemap:
-        if plotting_crs is None:
-            warnings.warn("Basemap disabled: CRS is undefined for the plot.", stacklevel=2)
-        else:
-            try:
-                import contextily as ctx
-
-                ctx_module = ctx
-                provider_obj = _resolve_basemap_provider(ctx, basemap_provider)
-                basemap_enabled = provider_obj is not None
-            except Exception as exc:
-                warnings.warn(f"Не удалось подготовить подложку карты: {exc}", stacklevel=2)
-
-    if basemap_enabled:
-        target_epsg = 3857
-        try:
-            if plot_changed.crs is not None:
-                plot_changed = plot_changed.to_crs(epsg=target_epsg)
-            if plot_unchanged.crs is not None:
-                plot_unchanged = plot_unchanged.to_crs(epsg=target_epsg)
-            if target_gdf.crs is not None:
-                target_plot_gdf = target_gdf.to_crs(epsg=target_epsg)
-            plotting_crs = (
-                plot_changed.crs or plot_unchanged.crs or target_plot_gdf.crs or plotting_crs
-            )
-        except Exception as exc:
-            warnings.warn(f"Не удалось перепроектировать данные для подложки: {exc}", stacklevel=2)
-            basemap_enabled = False
-            plot_changed = source_changed
-            plot_unchanged = source_unchanged
-            target_plot_gdf = gpd.GeoDataFrame(geometry=[target_geometry], crs=plotting_crs)
-            plotting_crs = plot_changed.crs or plot_unchanged.crs or target_plot_gdf.crs
 
     if len(plot_unchanged):
         plot_unchanged.plot(ax=ax, color="lightgrey", edgecolor="white", linewidth=0.3, zorder=1)
@@ -512,23 +413,6 @@ def _plot_change_map(
                 transform=offset_copy(ax.transData, fig=fig, y=-10, units="points"),
                 zorder=4,
             )
-
-    xlim = ax.get_xlim()
-    ylim = ax.get_ylim()
-
-    if basemap_enabled and ctx_module is not None and provider_obj is not None:
-        try:
-            ctx_module.add_basemap(
-                ax,
-                source=provider_obj,
-                crs=plotting_crs,
-                attribution=False,
-                zorder=0,
-            )
-            ax.set_xlim(xlim)
-            ax.set_ylim(ylim)
-        except Exception as exc:
-            warnings.warn(f"Не удалось наложить подложку карты: {exc}", stacklevel=2)
 
     target_plot_gdf.boundary.plot(
         ax=ax,

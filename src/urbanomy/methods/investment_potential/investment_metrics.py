@@ -309,7 +309,7 @@ class InvestmentAttractivenessAnalyzer:
             raise ValueError(f"Polygon {row.name} has no valid land area")
 
         land_cost_total = self._to_float(
-            row.get("price_pred", row.get("price_pred_before"))
+            row.get("land_value", row.get("land_value_before"))
         )
         if np.isfinite(land_cost_total) and land_area > 0:
             params["land_cost"] = land_cost_total / land_area
@@ -568,6 +568,13 @@ class InvestmentAttractivenessAnalyzer:
         )
         self._coerce_numeric_columns(working, INVESTMENT_NUMERIC_COLUMNS)
 
+        if "land_value_before" not in working.columns:
+            working["land_value_before"] = working.get("land_value", np.nan)
+        if "land_value" not in working.columns:
+            working["land_value"] = working.get("land_value_before", np.nan)
+        working["land_value_before"] = pd.to_numeric(working["land_value_before"], errors="coerce")
+        working["land_value"] = pd.to_numeric(working["land_value"], errors="coerce")
+
         row_results = [
             self._calculate_row_metrics(idx, row, base_discount_rate)
             for idx, row in working.loc[valid_mask].iterrows()
@@ -583,7 +590,7 @@ class InvestmentAttractivenessAnalyzer:
         profile_fields = {
             "land_area": "land_area",
             "built_area": "built_area",
-            "land_cost": "land_cost_total",
+            "land_value": "land_cost_total",
             "construction_cost": "construction_cost",
             "investment_need": "investment_need",
         }
@@ -610,7 +617,11 @@ class InvestmentAttractivenessAnalyzer:
                 pd.DataFrame.from_records(metrics_records)
                 .set_index("_index")
             )
-            working = working.join(metrics_df)
+            # Preserve existing columns while enriching with calculated metrics.
+            missing_cols = [col for col in metrics_df.columns if col not in working.columns]
+            for column in missing_cols:
+                working[column] = np.nan
+            working.update(metrics_df)
         else:
             for column in (*raw_to_final.keys(), *profile_fields.keys()):
                 if column not in working.columns:
@@ -641,12 +652,6 @@ class InvestmentAttractivenessAnalyzer:
         inv_series = spatial_weights * spatial_normalized + economic_weights * economic_normalized
         working["INV"] = inv_series.round(2)
 
-        working["land_purchase_price"] = (
-            pd.to_numeric(working["price_pred_before"], errors="coerce")
-            if "price_pred_before" in working.columns
-            else np.nan
-        )
-
         summary = working.reindex(columns=SUMMARY_COLUMNS).copy()
         columns_to_null = [
             col for col in ("INV", "spatial_potential", "NPV", "IRR", "ROI", "PP_years", "EI")
@@ -664,13 +669,13 @@ class InvestmentAttractivenessAnalyzer:
 
         land_area_series = summary["land_area"] if "land_area" in summary.columns else pd.Series(0.0, index=summary.index)
         built_area_series = summary["built_area"] if "built_area" in summary.columns else pd.Series(0.0, index=summary.index)
-        land_cost_series = summary["land_cost"] if "land_cost" in summary.columns else pd.Series(0.0, index=summary.index)
+        land_value_series = summary["land_value"] if "land_value" in summary.columns else pd.Series(0.0, index=summary.index)
         construction_cost_series = summary["construction_cost"] if "construction_cost" in summary.columns else pd.Series(0.0, index=summary.index)
         investment_need_series = summary["investment_need"] if "investment_need" in summary.columns else pd.Series(0.0, index=summary.index)
 
         total_area = land_area_series.loc[valid_mask].sum(skipna=True)
         total_built = built_area_series.loc[valid_mask].sum(skipna=True)
-        total_land_cost = land_cost_series.loc[valid_mask].sum(skipna=True)
+        total_land_value = land_value_series.loc[valid_mask].sum(skipna=True)
         total_construction_cost = construction_cost_series.loc[valid_mask].sum(skipna=True)
         total_investment_need = investment_need_series.loc[valid_mask].sum(skipna=True)
 
@@ -728,7 +733,7 @@ class InvestmentAttractivenessAnalyzer:
 
         inv_project = ws_mean * s_norm_project + we_mean * e_norm_project
 
-        currency_columns = {"land_purchase_price", "land_cost", "construction_cost", "investment_need", "NPV"}
+        currency_columns = {"land_value_before", "land_value", "construction_cost", "investment_need", "NPV"}
         numeric_cols = summary.select_dtypes(include=[np.number]).columns
         for col in numeric_cols:
             summary[col] = self._round_clean(summary[col], decimals=2)
@@ -738,7 +743,7 @@ class InvestmentAttractivenessAnalyzer:
         print("Project totals:")
         print(f" • Land area:          {total_area:,.2f}")
         print(f" • Built area:         {total_built:,.2f}")
-        print(f" • Land cost:          {total_land_cost:,.2f}")
+        print(f" • Land value:         {total_land_value:,.2f}")
         print(f" • Construction cost:  {total_construction_cost:,.2f}")
         print(f" • Investment need:    {total_investment_need:,.2f}")
         print(f" • Spatial potential:  {s_project:,.2f}" if np.isfinite(s_project) else " • Spatial potential:  n/a")

@@ -87,17 +87,15 @@ class LandPriceEstimator:
         Returns
         -------
         geopandas.GeoDataFrame
-            Copy of the original blocks with two additional columns:
-            ``y_log_pred`` (logarithmic price) and ``price_pred`` (price in the
-            original scale).
+            Copy of the original blocks with an extra ``land_value`` column in
+            the original monetary scale.
         """
 
         design_matrix = self._design_matrix(self._blocks)
         y_log = self.model.predict(design_matrix)
 
         blocks_pred = self._blocks.copy()
-        blocks_pred["y_log_pred"] = y_log
-        blocks_pred["price_pred"] = np.exp(y_log)
+        blocks_pred["land_value"] = np.exp(y_log)
         return blocks_pred
 
     def _build_distance_weights(self) -> Mapping[float, DistanceBand]:
@@ -232,9 +230,9 @@ def transfer_baseline_prices(
     before_blocks: gpd.GeoDataFrame,
     *,
     id_column: str = "id",
-    price_column: str = "price_pred",
+    price_column: str = "land_value",
     scenario_column: str = "is_scn",
-    output_column: str = "price_pred_before",
+    output_column: str = "land_value_before",
     area_column: str = "site_area",
 ) -> gpd.GeoDataFrame:
     """Project baseline land prices from historical blocks onto scenario blocks.
@@ -254,12 +252,12 @@ def transfer_baseline_prices(
     id_column : str, optional
         Unique polygon identifier present in ``after_blocks``. Defaults to ``"id"``.
     price_column : str, optional
-        Column in ``before_blocks`` containing baseline total prices. Defaults to ``"price_pred"``.
+        Column in ``before_blocks`` containing baseline total prices. Defaults to ``"land_value"``.
     scenario_column : str, optional
         Boolean column indicating scenario polygons. Defaults to ``"is_scn"``.
     output_column : str, optional
         Name of the column to store the transferred baseline price inside the
-        returned GeoDataFrame. Defaults to ``"price_pred_before"``.
+        returned GeoDataFrame. Defaults to ``"land_value_before"``.
     area_column : str, optional
         Column describing block areas in square metres. When missing or
         containing non-positive values, geometry-derived areas are used.
@@ -289,9 +287,6 @@ def transfer_baseline_prices(
 
     after_geom_col = after_blocks.geometry.name
     before_geom_col = before_blocks.geometry.name
-
-    after_mask = after_blocks[scenario_column].fillna(False).astype(bool)
-    before_mask = before_blocks[scenario_column].fillna(False).astype(bool)
 
     result = after_blocks.copy()
     baseline_column = "_baseline_price"
@@ -323,26 +318,24 @@ def transfer_baseline_prices(
         )
         return merged.drop(columns=[baseline_column])
 
-    after_scn = result.loc[after_mask].copy()
-    before_scn = before_blocks.loc[before_mask].copy()
-
-    if after_scn.empty or before_scn.empty:
+    if result.empty or before_blocks.empty:
         return gpd.GeoDataFrame(
             _apply_baseline(result),
             geometry=after_geom_col,
             crs=after_blocks.crs,
         )
 
-    before_scn["area_before"] = before_scn.geometry.area
-    before_scn["unit_price_before"] = np.where(
-        before_scn["area_before"] > 0,
-        before_scn[price_column] / before_scn["area_before"],
+    before_blocks = before_blocks.copy()
+    before_blocks["area_before"] = before_blocks.geometry.area
+    before_blocks["unit_price_before"] = np.where(
+        before_blocks["area_before"] > 0,
+        before_blocks[price_column] / before_blocks["area_before"],
         np.nan,
     )
 
     intersections = gpd.overlay(
-        after_scn[[id_column, after_geom_col]],
-        before_scn[["unit_price_before", before_geom_col]],
+        result[[id_column, after_geom_col]],
+        before_blocks[["unit_price_before", before_geom_col]],
         how="intersection",
         keep_geom_type=False,
     )
@@ -376,10 +369,11 @@ def transfer_baseline_prices(
         .rename(columns={"contrib": "unit_price_before_weighted"})
     )
 
-    after_scn = after_scn.merge(price_transfer, on=id_column, how="left")
-    scenario_area = _resolve_area(after_scn)
-    after_scn[output_column] = after_scn["unit_price_before_weighted"] * scenario_area
-    merged = result.merge(after_scn[[id_column, output_column]], on=id_column, how="left")
+    area_lookup = result[[id_column]].copy()
+    area_lookup["_resolved_area"] = _resolve_area(result)
+    price_transfer = price_transfer.merge(area_lookup, on=id_column, how="left")
+    price_transfer[output_column] = price_transfer["unit_price_before_weighted"] * price_transfer["_resolved_area"]
+    merged = result.merge(price_transfer[[id_column, output_column]], on=id_column, how="left")
 
     return gpd.GeoDataFrame(
         _apply_baseline(merged),

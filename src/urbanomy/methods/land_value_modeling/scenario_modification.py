@@ -227,15 +227,15 @@ def plot_scenario_impact(
         categorical_features=cats,
     )
 
-    before_pred = before_estimator.predict()[["y_log_pred", "price_pred"]]
-    after_pred = after_estimator.predict()[["y_log_pred", "price_pred"]]
+    before_pred = before_estimator.predict()[["land_value"]]
+    after_pred = after_estimator.predict()[["land_value"]]
 
     combined = blocks_after.copy()
-    combined["price_before"] = before_pred["price_pred"].astype(float)
-    combined["price_after"] = after_pred["price_pred"].astype(float)
-    combined["d_rub"] = combined["price_after"] - combined["price_before"]
+    combined["land_value_before"] = before_pred["land_value"].astype(float)
+    combined["land_value_after"] = after_pred["land_value"].astype(float)
+    combined["d_rub"] = combined["land_value_after"] - combined["land_value_before"]
     combined["d_pct"] = (
-        (combined["price_after"] / combined["price_before"] - 1.0) * 100
+        (combined["land_value_after"] / combined["land_value_before"] - 1.0) * 100
     ).replace([np.inf, -np.inf], np.nan)
 
     buffer_gdf = _build_buffer(blocks_before, target_idx, buffer_radius)
@@ -572,7 +572,7 @@ def _summarise_changes(gdf: GeoDataFrame) -> Dict[str, float]:
     Parameters
     ----------
     gdf : geopandas.GeoDataFrame
-        Dataset containing ``price_before`` and ``price_after`` columns.
+        Dataset containing ``land_value_before`` and ``land_value_after`` columns.
 
     Returns
     -------
@@ -588,13 +588,15 @@ def _summarise_changes(gdf: GeoDataFrame) -> Dict[str, float]:
             "count": 0,
         }
 
-    price_before = float(gdf["price_before"].sum())
-    price_after = float(gdf["price_after"].sum())
-    delta = price_after - price_before
-    delta_pct = (price_after / price_before - 1.0) * 100 if price_before > 0 else np.nan
+    land_value_before = float(gdf["land_value_before"].sum())
+    land_value_after = float(gdf["land_value_after"].sum())
+    delta = land_value_after - land_value_before
+    delta_pct = (
+        (land_value_after / land_value_before - 1.0) * 100 if land_value_before > 0 else np.nan
+    )
     return {
-        "sum_before": price_before,
-        "sum_after": price_after,
+        "sum_before": land_value_before,
+        "sum_after": land_value_after,
         "delta": delta,
         "delta_pct": delta_pct,
         "count": int(len(gdf)),
@@ -649,7 +651,7 @@ def _print_summary(
         print("index | до (₽) → после (₽) | Δ₽ | Δ%")
         for idx, row in gdf.iterrows():
             print(
-                f"{idx} | {_fmt_rub(row['price_before'])} → {_fmt_rub(row['price_after'])} | "
+                f"{idx} | {_fmt_rub(row['land_value_before'])} → {_fmt_rub(row['land_value_after'])} | "
                 f"{_fmt_rub(row['d_rub'], signed=True)} | {_fmt_pct(row['d_pct'])}"
             )
     else:

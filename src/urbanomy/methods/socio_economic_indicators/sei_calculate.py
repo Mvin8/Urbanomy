@@ -154,13 +154,21 @@ class SEREstimator:
             optional land-cost information.
         """
         data = df.copy()
+        legacy_to_new = {
+            'land_cost': 'land_value',
+            'land_purchase_price': 'land_value_before',
+            'land_cost_before': 'land_value_before',
+        }
+        for legacy_col, new_col in legacy_to_new.items():
+            if new_col not in data.columns and legacy_col in data.columns:
+                data[new_col] = data[legacy_col]
+
         numeric_cols = [
             'built_area',
             'construction_cost',
             'investment_need',
-            'land_cost',
-            'land_purchase_price',
-            'land_cost_before',
+            'land_value',
+            'land_value_before',
         ]
         for col in numeric_cols:
             if col in data.columns:
@@ -175,20 +183,18 @@ class SEREstimator:
             data['construction_cost'] = data['construction_cost'].where(
                 data['construction_cost'] > 0, inv
             )
-        if 'land_purchase_price' in data.columns:
-            data['land_cost_before'] = data['land_purchase_price']
-        elif 'land_cost' in data.columns and 'land_cost_before' not in data.columns:
-            data['land_cost_before'] = data['land_cost']
+        if 'land_value_before' not in data.columns and 'land_value' in data.columns:
+            data['land_value_before'] = data['land_value']
         data['land_use'] = data['land_use'].apply(self._normalise_land_use_label)
 
         aggregation: Dict[str, Any] = {
             'I': ('construction_cost', 'sum'),
             'A': ('built_area', 'sum'),
         }
-        if 'land_cost' in data.columns:
-            aggregation['land_cost_after'] = ('land_cost', 'sum')
-        if 'land_cost_before' in data.columns:
-            aggregation['land_cost_before'] = ('land_cost_before', 'sum')
+        if 'land_value' in data.columns:
+            aggregation['land_value_after'] = ('land_value', 'sum')
+        if 'land_value_before' in data.columns:
+            aggregation['land_value_before'] = ('land_value_before', 'sum')
 
         return (
             data
@@ -238,10 +244,12 @@ class SEREstimator:
         float
             Incremental land tax contributed by the project.
         """
-        if not rate or 'land_cost_after' not in aggregated.columns:
+        value_after_col = 'land_value_after' if 'land_value_after' in aggregated.columns else 'land_cost_after'
+        value_before_col = 'land_value_before' if 'land_value_before' in aggregated.columns else 'land_cost_before'
+        if not rate or value_after_col not in aggregated.columns:
             return 0.0
-        land_after_total = aggregated['land_cost_after'].sum()
-        land_before_total = aggregated['land_cost_before'].sum() if 'land_cost_before' in aggregated.columns else 0.0
+        land_after_total = aggregated[value_after_col].sum()
+        land_before_total = aggregated[value_before_col].sum() if value_before_col in aggregated.columns else 0.0
         return (land_after_total - land_before_total) * rate
 
     @staticmethod

@@ -151,7 +151,7 @@ class LandUseScoreAnalyzer:
         Convert wide-format scores to long format.
 
         Takes the output of `_compute_wide` and melts score columns
-        into `ip_type`, `ip_value`, preserving geometry.
+        into `ip_type`, `spatial_potential`, preserving geometry.
 
         Parameters
         ----------
@@ -163,7 +163,7 @@ class LandUseScoreAnalyzer:
         geopandas.GeoDataFrame
             Long-format GeoDataFrame with columns:
             - ip_type : str, land-use key
-            - ip_value: float, computed score
+            - spatial_potential: float, computed score
             - geometry: Polygon geometry
         """
         wide = self._compute_wide(polygon_gdf)
@@ -175,9 +175,9 @@ class LandUseScoreAnalyzer:
                 id_vars="geometry",
                 value_vars=score_cols,
                 var_name="ip_type",
-                value_name="ip_value"
+                value_name="spatial_potential"
             )
-            .dropna(subset=["ip_value"])
+            .dropna(subset=["spatial_potential"])
             .reset_index(drop=True)
         )
 

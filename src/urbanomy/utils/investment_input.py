@@ -10,9 +10,9 @@ import pandas as pd
 from loguru import logger
 
 # ``urbanomy.methods.investment_potential.constants.DEFAULT_IP_VALUE`` uses the
-# same literal value ("ip_value"); duplicating it here avoids an import cycle
+# same literal value ("spatial_potential"); duplicating it here avoids an import cycle
 # when this module is imported ahead of ``investment_potential.constants``.
-DEFAULT_IP_VALUE: str = "ip_value"
+DEFAULT_IP_VALUE: str = "spatial_potential"
 
 
 INVESTMENT_NUMERIC_COLUMNS: tuple[str, ...] = (
@@ -189,14 +189,14 @@ def _ensure_geodataframe(data: gpd.GeoDataFrame | pd.DataFrame) -> gpd.GeoDataFr
     raise TypeError("Expected GeoDataFrame or DataFrame input.")
 
 
-def _build_ip_value_lookup(
+def _build_spatial_potential_lookup(
     base_gdf: gpd.GeoDataFrame | pd.DataFrame,
     allowed_uses: Iterable[str],
     *,
     land_use_column: str,
     land_use_prefix_pattern: str,
     ip_type_column: str,
-    ip_value_column: str,
+    spatial_potential_column: str,
 ) -> pd.DataFrame:
     """Aggregate baseline IP values by land-use type.
 
@@ -213,14 +213,14 @@ def _build_ip_value_lookup(
         Regex pattern removed from land-use codes prior to normalisation.
     ip_type_column : str
         Column containing land-use type identifiers.
-    ip_value_column : str
+    spatial_potential_column : str
         Column holding baseline IP values.
 
     Returns
     -------
     pandas.DataFrame
         Two-column DataFrame mapping ``ip_type_column`` to averaged baseline
-        values under the alias ``ip_value_from_base``.
+        values under the alias ``spatial_potential_from_base``.
 
     Raises
     ------
@@ -244,24 +244,24 @@ def _build_ip_value_lookup(
     working = working.dropna(subset=[ip_type_column])
     working = working[working[ip_type_column] != "none"]
 
-    if ip_value_column not in working.columns:
+    if spatial_potential_column not in working.columns:
         if "potential" in working.columns:
-            working[ip_value_column] = working["potential"]
+            working[spatial_potential_column] = working["potential"]
         else:
             raise ValueError(
-                f"Column '{ip_value_column}' is missing in base_gdf."
+                f"Column '{spatial_potential_column}' is missing in base_gdf."
             )
 
-    working[ip_value_column] = pd.to_numeric(working[ip_value_column], errors="coerce")
+    working[spatial_potential_column] = pd.to_numeric(working[spatial_potential_column], errors="coerce")
 
     allowed = tuple(allowed_uses)
     if allowed:
         working = working[working[ip_type_column].isin(allowed)]
 
     return (
-        working.groupby(ip_type_column, as_index=False)[ip_value_column]
+        working.groupby(ip_type_column, as_index=False)[spatial_potential_column]
         .mean()
-        .rename(columns={ip_value_column: "ip_value_from_base"})
+        .rename(columns={spatial_potential_column: "spatial_potential_from_base"})
     )
 
 
@@ -275,7 +275,7 @@ def _prepare_with_base(
     ip_type_column: str,
     scenario_flag_column: str,
     land_use_prefix_pattern: str,
-    ip_value_column: str,
+    spatial_potential_column: str,
 ) -> gpd.GeoDataFrame:
     """Filter, normalise, and enrich scenario polygons using baseline data.
 
@@ -300,7 +300,7 @@ def _prepare_with_base(
         Column indicating scenario membership (used for filtering when present).
     land_use_prefix_pattern : str
         Regex pattern removed from land-use codes.
-    ip_value_column : str
+    spatial_potential_column : str
         Column receiving the imputed IP values.
 
     Returns
@@ -352,17 +352,17 @@ def _prepare_with_base(
         )
         working.loc[invalid_mask, ip_type_column] = pd.NA
 
-    base_lookup = _build_ip_value_lookup(
+    base_lookup = _build_spatial_potential_lookup(
         base_gdf,
         allowed_uses=allowed_uses,
         land_use_column=land_use_column,
         land_use_prefix_pattern=land_use_prefix_pattern,
         ip_type_column=ip_type_column,
-        ip_value_column=ip_value_column,
+        spatial_potential_column=spatial_potential_column,
     )
 
     working = working.merge(base_lookup, on=ip_type_column, how="left")
-    working[ip_value_column] = working.pop("ip_value_from_base").fillna(0.0)
+    working[spatial_potential_column] = working.pop("spatial_potential_from_base").fillna(0.0)
 
     return working
 
@@ -377,7 +377,7 @@ def prepare_investment_input(
     ip_type_column: str = "ip_type",
     scenario_flag_column: str = "is_scn",
     land_use_prefix_pattern: str = r"^LandUse\.",
-    ip_value_column: str = DEFAULT_IP_VALUE,
+    spatial_potential_column: str = DEFAULT_IP_VALUE,
 ) -> pd.DataFrame:
     """Prepare scenario data for investment-metrics calculation.
 
@@ -402,7 +402,7 @@ def prepare_investment_input(
         Column indicating scenario membership (default ``"is_scn"``).
     land_use_prefix_pattern : str, optional
         Regex pattern removed from land-use codes (default ``r"^LandUse\."``).
-    ip_value_column : str, optional
+    spatial_potential_column : str, optional
         Column receiving the imputed IP values (default ``DEFAULT_IP_VALUE``).
 
     Returns
@@ -430,7 +430,7 @@ def prepare_investment_input(
             ip_type_column=ip_type_column,
             scenario_flag_column=scenario_flag_column,
             land_use_prefix_pattern=land_use_prefix_pattern,
-            ip_value_column=ip_value_column,
+            spatial_potential_column=spatial_potential_column,
         )
 
     polygon_gdf["land_value"] = pd.to_numeric(

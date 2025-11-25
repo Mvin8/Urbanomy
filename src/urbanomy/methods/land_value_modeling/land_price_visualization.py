@@ -17,9 +17,9 @@ _FIGSIZE = (18, 14)
 def _price_metric_label(price_column: str) -> str:
     """Return a human-friendly label for the selected price column."""
     column = price_column.lower()
-    if column == "price_pred":
+    if column == "land_value":
         return "после застройки"
-    if column == "price_pred_before":
+    if column == "land_value_before":
         return "до застройки"
     return price_column
 
@@ -27,8 +27,8 @@ def _price_metric_label(price_column: str) -> str:
 def plot_land_price_maps(
     *,
     blocks_pred: GeoDataFrame,
-    price_column: str = "price_pred",
-    log_price_column: str = "y_log_pred",
+    price_column: str = "land_value",
+    log_price_column: str | None = None,
     area_column: str = "site_area",
     buffer_radius_m: float = 2000.0,
     show: bool = True,
@@ -42,17 +42,16 @@ def plot_land_price_maps(
     ----------
     blocks_pred : geopandas.GeoDataFrame
         Dataset containing price predictions, block geometries, and the
-        ``is_scn`` flag. The DataFrame is copied internally to avoid mutating
+        ``is_project`` flag. The DataFrame is copied internally to avoid mutating
         the original object.
-    price_column : str, default='price_pred'
+    price_column : str, default='land_value'
         Name of the column with price predictions in the original scale. Pass
-        ``"price_pred_before"`` to visualise baseline prices transferred from
+        ``"land_value_before"`` to visualise baseline prices transferred from
         historical blocks. If the column is missing but ``log_price_column`` is
-        available (and ``price_column`` equals ``"price_pred"``), prices are
-        derived by exponentiating the logarithmic predictions.
-    log_price_column : str, default='y_log_pred'
+        available, prices are derived by exponentiating the logarithmic predictions.
+    log_price_column : str or None, default=None
         Column containing logarithmic prices. Used as a fallback to build
-        ``price_column`` when it is absent.
+        ``price_column`` when it is absent and ``log_price_column`` is provided.
     area_column : str, default='site_area'
         Column with block areas in square metres. Rows where the value is not
         positive fall back to areas derived from geometry in planar metres.
@@ -72,7 +71,7 @@ def plot_land_price_maps(
 
     Notes
     -----
-    When both ``price_pred`` and ``price_pred_before`` are present in
+    When both ``land_value`` and ``land_value_before`` are present in
     ``blocks_pred``, colour bounds are inferred from the combined distribution
     so that before/after visualisations share the same scale.
 
@@ -92,7 +91,7 @@ def plot_land_price_maps(
         raise ValueError("quantile_bounds must be within [0, 1] and low <= high.")
 
     if price_column not in blocks.columns:
-        if log_price_column in blocks.columns and price_column == "price_pred":
+        if log_price_column and log_price_column in blocks.columns:
             blocks[price_column] = np.exp(blocks[log_price_column])
         else:
             raise ValueError(
@@ -109,7 +108,7 @@ def plot_land_price_maps(
 
     candidate_columns = {price_column}
     candidate_columns.update(
-        col for col in ("price_pred", "price_pred_before") if col in blocks.columns
+        col for col in ("land_value", "land_value_before") if col in blocks.columns
     )
     candidate_per_sotka = [price_per_sotka]
     for col in candidate_columns:
@@ -206,15 +205,15 @@ def _geometry_area_m2(blocks: GeoDataFrame) -> np.ndarray:
 
 
 def _split_scenario_context(blocks: GeoDataFrame) -> Tuple[GeoDataFrame, GeoDataFrame]:
-    """Separate scenario and context subsets, validating the `is_scn` column."""
-    if "is_scn" not in blocks.columns:
+    """Separate scenario and context subsets, validating the `is_project` column."""
+    if "is_project" not in blocks.columns:
         raise ValueError(
-            "Column 'is_scn' is required. Run LandDataPreparator or add the column before calling plot_land_price_maps."
+            "Column 'is_project' is required. Run LandDataPreparator or add the column before calling plot_land_price_maps."
         )
 
-    scenario_mask = pd.Series(blocks["is_scn"], index=blocks.index).fillna(False).astype(bool)
+    scenario_mask = pd.Series(blocks["is_project"], index=blocks.index).fillna(False).astype(bool)
     if not scenario_mask.any():
-        raise ValueError("No scenario blocks detected. Ensure column 'is_scn' contains True values.")
+        raise ValueError("No scenario blocks detected. Ensure column 'is_project' contains True values.")
 
     scenario_subset = blocks[scenario_mask].copy()
     context_subset = blocks[~scenario_mask].copy()

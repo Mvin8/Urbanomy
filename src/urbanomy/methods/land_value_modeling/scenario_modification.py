@@ -8,6 +8,8 @@ import geopandas as gpd
 import matplotlib.pyplot as plt
 import numpy as np
 from geopandas import GeoDataFrame
+from matplotlib.lines import Line2D
+from matplotlib.patches import Patch
 from matplotlib.transforms import offset_copy
 
 from blocksnet.enums import LandUse
@@ -163,6 +165,7 @@ def plot_scenario_impact(
     radius_list: Sequence[float] | None = None,
     eps: float = 1e-9,
     buffer_radius: float = 4000.0,
+    figsize: tuple[float, float] | None = None,
     show: bool = True,
     print_summary: bool = True,
 ) -> Dict[str, object]:
@@ -191,6 +194,8 @@ def plot_scenario_impact(
         Threshold to decide whether the price change is significant.
     buffer_radius : float, default=4000.0
         Buffer radius (in metres) around the target block used to clip the map.
+    figsize : tuple[float, float], optional
+        Figure size passed to Matplotlib ``plt.subplots``.
     show : bool, default=True
         Display the generated figure using Matplotlib.
     print_summary : bool, default=True
@@ -222,15 +227,15 @@ def plot_scenario_impact(
         categorical_features=cats,
     )
 
-    before_pred = before_estimator.predict()[["y_log_pred", "price_pred"]]
-    after_pred = after_estimator.predict()[["y_log_pred", "price_pred"]]
+    before_pred = before_estimator.predict()[["land_value"]]
+    after_pred = after_estimator.predict()[["land_value"]]
 
     combined = blocks_after.copy()
-    combined["price_before"] = before_pred["price_pred"].astype(float)
-    combined["price_after"] = after_pred["price_pred"].astype(float)
-    combined["d_rub"] = combined["price_after"] - combined["price_before"]
+    combined["land_value_before"] = before_pred["land_value"].astype(float)
+    combined["land_value_after"] = after_pred["land_value"].astype(float)
+    combined["d_rub"] = combined["land_value_after"] - combined["land_value_before"]
     combined["d_pct"] = (
-        (combined["price_after"] / combined["price_before"] - 1.0) * 100
+        (combined["land_value_after"] / combined["land_value_before"] - 1.0) * 100
     ).replace([np.inf, -np.inf], np.nan)
 
     buffer_gdf = _build_buffer(blocks_before, target_idx, buffer_radius)
@@ -252,6 +257,7 @@ def plot_scenario_impact(
         target_geometry=blocks_before.loc[target_idx, "geometry"],
         vmin=vmin,
         vmax=vmax,
+        figsize=figsize,
         show=show,
     )
 
@@ -310,6 +316,7 @@ def _plot_change_map(
     target_geometry,
     vmin: float,
     vmax: float,
+    figsize: tuple[float, float] | None,
     show: bool,
 ) -> plt.Figure:
     """Plot percentage price changes around the target block.
@@ -324,6 +331,8 @@ def _plot_change_map(
         Geometry of the focus block to outline.
     vmin, vmax : float
         Color scale bounds for percentage change.
+    figsize : tuple[float, float] | None
+        Optional figure size passed to ``plt.subplots``.
     show : bool
         Whether to render the Matplotlib figure immediately.
 
@@ -332,23 +341,55 @@ def _plot_change_map(
     matplotlib.figure.Figure
         Figure displaying the scenario impact map.
     """
-    fig, ax = plt.subplots(figsize=(35, 30))
-    if len(unchanged):
-        unchanged.plot(ax=ax, color="lightgrey", edgecolor="white", linewidth=0.3, zorder=1)
-    if len(changed):
-        changed.plot(
+    fig, ax = plt.subplots(figsize=figsize or (35, 30))
+    fig.subplots_adjust(left=0, right=1, top=1, bottom=0)
+    plot_changed = changed.copy()
+    plot_unchanged = unchanged.copy()
+    has_colorbar = False
+
+    base_crs = plot_changed.crs or plot_unchanged.crs
+    target_gdf = gpd.GeoDataFrame(geometry=[target_geometry], crs=base_crs)
+    plotting_crs = plot_changed.crs or plot_unchanged.crs or target_gdf.crs
+
+    if base_crs is not None:
+        if plot_changed.crs is None:
+            plot_changed = plot_changed.set_crs(base_crs, allow_override=True)
+        if plot_unchanged.crs is None:
+            plot_unchanged = plot_unchanged.set_crs(base_crs, allow_override=True)
+        if target_gdf.crs is None:
+            target_gdf = target_gdf.set_crs(base_crs, allow_override=True)
+
+    target_plot_gdf = target_gdf
+
+    if len(plot_unchanged):
+        plot_unchanged.plot(ax=ax, color="lightgrey", edgecolor="white", linewidth=0.3, zorder=1)
+    if len(plot_changed):
+        plot_changed.plot(
             ax=ax,
             column="d_pct",
             cmap="coolwarm",
             vmin=vmin,
             vmax=vmax,
             legend=True,
+            legend_kwds={
+                "label": "Изменение цены, %",
+                "orientation": "vertical",
+                "pad": 0.02,
+                "shrink": 0.7,
+            },
             edgecolor="black",
             linewidth=0.4,
             zorder=2,
         )
 
-        for _, row in changed.iterrows():
+        if len(fig.axes) > 1:
+            cbar_ax = fig.axes[-1]
+            cbar_ax.set_ylabel("Изменение цены, %", fontsize=20)
+            cbar_ax.tick_params(labelsize=14)
+            cbar_ax.set_position([0.92, 0.15, 0.025, 0.7])
+            has_colorbar = True
+
+        for _, row in plot_changed.iterrows():
             x, y = row.geometry.centroid.coords[0]
             ax.text(
                 x,
@@ -373,19 +414,156 @@ def _plot_change_map(
                 zorder=4,
             )
 
-    gpd.GeoDataFrame(geometry=[target_geometry], crs=changed.crs or unchanged.crs).boundary.plot(
+    target_plot_gdf.boundary.plot(
         ax=ax,
         edgecolor="red",
         linewidth=2.0,
         zorder=3,
     )
 
-    ax.set_title("Изменение цены в процентах (after − before)", pad=12)
+    legend_handles: list[object] = []
+    if len(plot_unchanged):
+        legend_handles.append(
+            Patch(
+                facecolor="lightgrey",
+                edgecolor="white",
+                linewidth=0.3,
+                label="Кварталы без существующих изменений",
+            )
+        )
+    if len(plot_changed):
+        legend_handles.append(
+            Patch(
+                facecolor="none",
+                edgecolor="black",
+                linewidth=0.4,
+                label="Кварталы с изменением цены",
+            )
+        )
+    legend_handles.append(
+        Line2D([0], [0], color="red", linewidth=2.0, label="Границы изменяемого квартала")
+    )
+    ax.legend(
+        handles=legend_handles,
+        loc="upper right",
+        frameon=True,
+        title="Обозначения",
+        title_fontsize=18,
+        prop={"size": 16},
+    )
+
+    if has_colorbar:
+        ax.set_position([0.02, 0.02, 0.88, 0.96])
+    else:
+        ax.set_position([0.02, 0.02, 0.96, 0.96])
+
+    _add_scale_bar(
+        ax=ax,
+        crs=plotting_crs,
+        label="Масштаб",
+    )
+
+    ax.set_title("Изменение цены в процентах (after − before)", pad=12, fontsize=30)
     ax.axis("off")
-    plt.tight_layout()
     if show:
         plt.show()
     return fig
+
+
+def _add_scale_bar(
+    *,
+    ax: plt.Axes,
+    crs,
+    label: str,
+    units: str = "м",
+    length: float | None = None,
+    location: tuple[float, float] = (0.08, 0.08),
+    linewidth: float = 4.0,
+) -> None:
+    """Draw a simple scale bar in the lower corner of the map."""
+    if not ax:
+        return
+
+    if hasattr(crs, "is_geographic") and crs.is_geographic:
+        ax.text(
+            0.02,
+            0.02,
+            "Масштаб недоступен (географическая проекция)",
+            transform=ax.transAxes,
+            fontsize=10,
+            va="bottom",
+            ha="left",
+            bbox=dict(facecolor="white", alpha=0.7, edgecolor="none"),
+        )
+        return
+
+    x_min, x_max = ax.get_xlim()
+    y_min, y_max = ax.get_ylim()
+    width = float(x_max - x_min)
+    height = float(y_max - y_min)
+    if width <= 0 or height <= 0:
+        return
+
+    candidates = (50, 100, 200, 250, 500, 1000, 2000, 5000, 10000, 20000)
+    target = width / 5.0
+    if not length:
+        length = max((cand for cand in candidates if cand <= target), default=candidates[0])
+        if length > target and len(candidates):
+            length = min(candidates, key=lambda cand: abs(cand - target))
+
+    x_start = x_min + width * location[0]
+    y_start = y_min + height * location[1]
+    segment_length = length / 2
+    baseline = y_start
+    tick_height = height * 0.02
+
+    ax.plot(
+        [x_start, x_start + length],
+        [baseline, baseline],
+        color="black",
+        linewidth=linewidth,
+        solid_capstyle="butt",
+        zorder=5,
+    )
+
+    tick_positions = (x_start, x_start + segment_length, x_start + length)
+    tick_labels = (
+        "0",
+        f"{int(round(segment_length))}",
+        f"{int(round(length))}",
+    )
+    for x_pos in tick_positions:
+        ax.plot(
+            [x_pos, x_pos],
+            [baseline, baseline + tick_height],
+            color="black",
+            linewidth=linewidth / 1.5,
+            zorder=6,
+        )
+
+    for label_text, x_pos in zip(tick_labels, tick_positions):
+        suffix = f" {units}" if x_pos == tick_positions[-1] else ""
+        ax.text(
+            x_pos,
+            baseline + tick_height * 1.4,
+            f"{label_text}{suffix}",
+            ha="center",
+            va="bottom",
+            fontsize=13,
+            bbox=dict(facecolor="white", alpha=0.8, edgecolor="none"),
+            zorder=7,
+        )
+
+    ax.text(
+        x_start,
+        baseline - tick_height * 1.8,
+        label,
+        ha="left",
+        va="top",
+        fontsize=13,
+        bbox=dict(facecolor="white", alpha=0.7, edgecolor="none"),
+        zorder=6,
+    )
 
 
 def _summarise_changes(gdf: GeoDataFrame) -> Dict[str, float]:
@@ -394,7 +572,7 @@ def _summarise_changes(gdf: GeoDataFrame) -> Dict[str, float]:
     Parameters
     ----------
     gdf : geopandas.GeoDataFrame
-        Dataset containing ``price_before`` and ``price_after`` columns.
+        Dataset containing ``land_value_before`` and ``land_value_after`` columns.
 
     Returns
     -------
@@ -410,13 +588,15 @@ def _summarise_changes(gdf: GeoDataFrame) -> Dict[str, float]:
             "count": 0,
         }
 
-    price_before = float(gdf["price_before"].sum())
-    price_after = float(gdf["price_after"].sum())
-    delta = price_after - price_before
-    delta_pct = (price_after / price_before - 1.0) * 100 if price_before > 0 else np.nan
+    land_value_before = float(gdf["land_value_before"].sum())
+    land_value_after = float(gdf["land_value_after"].sum())
+    delta = land_value_after - land_value_before
+    delta_pct = (
+        (land_value_after / land_value_before - 1.0) * 100 if land_value_before > 0 else np.nan
+    )
     return {
-        "sum_before": price_before,
-        "sum_after": price_after,
+        "sum_before": land_value_before,
+        "sum_after": land_value_after,
         "delta": delta,
         "delta_pct": delta_pct,
         "count": int(len(gdf)),
@@ -471,7 +651,7 @@ def _print_summary(
         print("index | до (₽) → после (₽) | Δ₽ | Δ%")
         for idx, row in gdf.iterrows():
             print(
-                f"{idx} | {_fmt_rub(row['price_before'])} → {_fmt_rub(row['price_after'])} | "
+                f"{idx} | {_fmt_rub(row['land_value_before'])} → {_fmt_rub(row['land_value_after'])} | "
                 f"{_fmt_rub(row['d_rub'], signed=True)} | {_fmt_pct(row['d_pct'])}"
             )
     else:

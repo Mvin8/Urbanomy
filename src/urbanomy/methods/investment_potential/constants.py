@@ -134,15 +134,15 @@ DEFAULT_ECON_METRIC: str = "EI"
 DEFAULT_DISCOUNT_RATE: float = 0.18
 DEFAULT_AREA_COL: str = "Площадь территории"
 DEFAULT_IP_TYPE: str = "ip_type"
-DEFAULT_IP_VALUE: str = "ip_value"
+DEFAULT_IP_VALUE: str = "spatial_potential"
 
 
 SUMMARY_COLUMNS: Final[tuple[str, ...]] = (
     "land_use",
     "land_area",
-    "land_purchase_price",
+    "land_value_before",
     "built_area",
-    "land_cost",
+    "land_value",
     "construction_cost",
     "investment_need",
     "NPV",

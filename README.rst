@@ -104,7 +104,7 @@ Investment attractiveness
    investment_ready = prepare_investment_input(
        prepared_blocks,
        base_gdf=land_use_scores,
-       scenario_flag_column="is_scn",
+       scenario_flag_column="is_project",
    )
 
    # 3. Calculate economic metrics and final INV index

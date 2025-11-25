@@ -42,7 +42,7 @@ def plot_land_price_maps(
     ----------
     blocks_pred : geopandas.GeoDataFrame
         Dataset containing price predictions, block geometries, and the
-        ``is_scn`` flag. The DataFrame is copied internally to avoid mutating
+        ``is_project`` flag. The DataFrame is copied internally to avoid mutating
         the original object.
     price_column : str, default='land_value'
         Name of the column with price predictions in the original scale. Pass
@@ -205,15 +205,15 @@ def _geometry_area_m2(blocks: GeoDataFrame) -> np.ndarray:
 
 
 def _split_scenario_context(blocks: GeoDataFrame) -> Tuple[GeoDataFrame, GeoDataFrame]:
-    """Separate scenario and context subsets, validating the `is_scn` column."""
-    if "is_scn" not in blocks.columns:
+    """Separate scenario and context subsets, validating the `is_project` column."""
+    if "is_project" not in blocks.columns:
         raise ValueError(
-            "Column 'is_scn' is required. Run LandDataPreparator or add the column before calling plot_land_price_maps."
+            "Column 'is_project' is required. Run LandDataPreparator or add the column before calling plot_land_price_maps."
         )
 
-    scenario_mask = pd.Series(blocks["is_scn"], index=blocks.index).fillna(False).astype(bool)
+    scenario_mask = pd.Series(blocks["is_project"], index=blocks.index).fillna(False).astype(bool)
     if not scenario_mask.any():
-        raise ValueError("No scenario blocks detected. Ensure column 'is_scn' contains True values.")
+        raise ValueError("No scenario blocks detected. Ensure column 'is_project' contains True values.")
 
     scenario_subset = blocks[scenario_mask].copy()
     context_subset = blocks[~scenario_mask].copy()

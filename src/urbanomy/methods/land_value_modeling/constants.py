@@ -75,7 +75,7 @@ class BlockColumn(str, Enum):
     SHARE_LIVING = "share_living"
     SHARE_NON_LIVING = "share_non_living"
     RESIDENTIAL = "residential"
-    IS_SCENARIO = "is_scn"
+    IS_PROJECT = "is_project"
 
 
 class ScenarioResultKey(str, Enum):

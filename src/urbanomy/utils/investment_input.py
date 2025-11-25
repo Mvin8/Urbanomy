@@ -31,7 +31,7 @@ DEFAULT_SCENARIO_KEEP_COLUMNS: tuple[str, ...] = (
     "land_value",
     "land_value_before",
     "price_per_sotka",
-    "is_scn",
+    "is_project",
     "residential",
     "business",
     "recreation",
@@ -375,7 +375,7 @@ def prepare_investment_input(
     allowed_uses: Iterable[str] | None = None,
     land_use_column: str = "land_use",
     ip_type_column: str = "ip_type",
-    scenario_flag_column: str = "is_scn",
+    scenario_flag_column: str = "is_project",
     land_use_prefix_pattern: str = r"^LandUse\.",
     spatial_potential_column: str = DEFAULT_IP_VALUE,
 ) -> pd.DataFrame:
@@ -399,7 +399,7 @@ def prepare_investment_input(
     ip_type_column : str, optional
         Column name used for the derived IP type (default ``"ip_type"``).
     scenario_flag_column : str, optional
-        Column indicating scenario membership (default ``"is_scn"``).
+        Column indicating scenario membership (default ``"is_project"``).
     land_use_prefix_pattern : str, optional
         Regex pattern removed from land-use codes (default ``r"^LandUse\."``).
     spatial_potential_column : str, optional

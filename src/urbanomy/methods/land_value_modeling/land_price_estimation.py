@@ -231,7 +231,7 @@ def transfer_baseline_prices(
     *,
     id_column: str = "id",
     price_column: str = "land_value",
-    scenario_column: str = "is_scn",
+    scenario_column: str = "is_project",
     output_column: str = "land_value_before",
     area_column: str = "site_area",
 ) -> gpd.GeoDataFrame:
@@ -254,7 +254,7 @@ def transfer_baseline_prices(
     price_column : str, optional
         Column in ``before_blocks`` containing baseline total prices. Defaults to ``"land_value"``.
     scenario_column : str, optional
-        Boolean column indicating scenario polygons. Defaults to ``"is_scn"``.
+        Boolean column indicating scenario polygons. Defaults to ``"is_project"``.
     output_column : str, optional
         Name of the column to store the transferred baseline price inside the
         returned GeoDataFrame. Defaults to ``"land_value_before"``.

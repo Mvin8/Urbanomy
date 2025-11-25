@@ -150,7 +150,7 @@ class LandDataPreparator:
         Returns
         -------
         geopandas.GeoDataFrame
-            Concatenated blocks with ``site_area`` and ``is_scn`` columns.
+            Concatenated blocks with ``site_area`` and ``is_project`` columns.
         """
         scenario = self._resolve_blocks_input(scenario_source)
         context = self._resolve_blocks_input(context_source)
@@ -159,7 +159,7 @@ class LandDataPreparator:
         blocks = pd.concat([scenario, context], ignore_index=True)
         blocks = gpd.GeoDataFrame(blocks, geometry=scenario.geometry.name, crs=scenario.crs)
         blocks[BlockColumn.SITE_AREA.value] = blocks.geometry.area
-        blocks[BlockColumn.IS_SCENARIO.value] = LandDataPreparator.mark_scenario_blocks(blocks, scenario)
+        blocks[BlockColumn.IS_PROJECT.value] = LandDataPreparator.mark_scenario_blocks(blocks, scenario)
         return blocks
 
     def _resolve_blocks_input(
@@ -438,7 +438,7 @@ class LandDataPreparator:
                 cleaned = cleaned.drop(columns=drop_cols)
         geom_col = cleaned.geometry.name
         keep_cols = [col for col in self.output_columns if col in cleaned.columns]
-        scenario_flag = BlockColumn.IS_SCENARIO.value
+        scenario_flag = BlockColumn.IS_PROJECT.value
         if scenario_flag in cleaned.columns and scenario_flag not in keep_cols:
             keep_cols.append(scenario_flag)
         ordered_cols = keep_cols + ([geom_col] if geom_col not in keep_cols else [])

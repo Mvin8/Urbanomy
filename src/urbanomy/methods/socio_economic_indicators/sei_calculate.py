@@ -8,6 +8,7 @@ from blocksnet.enums import LandUse
 
 from urbanomy.methods.socio_economic_indicators.constants import (
     DEFAULT_AMORTIZATION_RATES,
+    DEFAULT_EMPLOYMENT_SHARE,
     DEFAULT_JOBS_PER_M2,
     DEFAULT_PROFIT_SHARE_OPS,
     DEFAULT_SER_PARAMETERS,
@@ -63,8 +64,10 @@ class SEREstimator:
         Parameters
         ----------
         params : dict
-            Configuration dictionary. Must include the keys ``population`` and
-            ``employment_base``. Any default stored in ``DEFAULT_SER_PARAMETERS``
+            Configuration dictionary. Must include ``population``. The base
+            employment level will be derived as ``employment_share`` of the
+            population (defaults to 62%) unless ``employment_base`` is provided
+            explicitly. Any default stored in ``DEFAULT_SER_PARAMETERS``
             (including ``avg_wage_base``) can be overridden by providing the
             corresponding key. Nested dictionaries are merged recursively.
 
@@ -73,12 +76,22 @@ class SEREstimator:
         ValueError
             If any of the mandatory baseline keys are absent.
         """
-        need = ['population', 'employment_base']
+        need = ['population']
         missing = [k for k in need if k not in params]
         if missing:
             raise ValueError(f"Missing required parameters: {missing}")
         # merge defaults and user-specified parameters
         self.cfg = self._merge_parameters(self.DEFAULT_PARAMETERS, params)
+        population = int(self.cfg['population'])
+        employment_base = self.cfg.get('employment_base')
+        if employment_base is None:
+            share = float(self.cfg.get('employment_share', DEFAULT_EMPLOYMENT_SHARE))
+            employment_base = int(population * share)
+            self.cfg['employment_share'] = share
+        else:
+            employment_base = int(employment_base)
+        self.cfg['population'] = population
+        self.cfg['employment_base'] = employment_base
 
     @staticmethod
     def _normalise_land_use_label(value: Any) -> str:
@@ -154,17 +167,10 @@ class SEREstimator:
             optional land-cost information.
         """
         data = df.copy()
-        legacy_to_new = {
-            'land_cost': 'land_value',
-            'land_purchase_price': 'land_value_before',
-            'land_cost_before': 'land_value_before',
-        }
-        for legacy_col, new_col in legacy_to_new.items():
-            if new_col not in data.columns and legacy_col in data.columns:
-                data[new_col] = data[legacy_col]
 
         numeric_cols = [
             'built_area',
+            'land_area',
             'construction_cost',
             'investment_need',
             'land_value',
@@ -183,8 +189,6 @@ class SEREstimator:
             data['construction_cost'] = data['construction_cost'].where(
                 data['construction_cost'] > 0, inv
             )
-        if 'land_value_before' not in data.columns and 'land_value' in data.columns:
-            data['land_value_before'] = data['land_value']
         data['land_use'] = data['land_use'].apply(self._normalise_land_use_label)
 
         aggregation: Dict[str, Any] = {

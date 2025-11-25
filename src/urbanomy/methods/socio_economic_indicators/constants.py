@@ -87,9 +87,11 @@ DEFAULT_AMORTIZATION_RATES: Final[dict[str, float]] = _value_map(
 DEFAULT_BUILD_WAGE_SHARE: Final[float] = 0.25
 DEFAULT_BUILD_PROFIT_MARGIN: Final[float] = 0.05
 FALLBACK_CAPEX_CAPITALIZABLE_SHARE: Final[float] = 1.0
+DEFAULT_EMPLOYMENT_SHARE: Final[float] = 0.62
 
 
 DEFAULT_SER_PARAMETERS: Final[dict[str, object]] = {
+    "employment_share": DEFAULT_EMPLOYMENT_SHARE,
     "avg_wage_base": DEFAULT_AVG_WAGE_BASE,
     "tax_rates": dict(DEFAULT_TAX_RATES),
     "va_coeff_build": _value_map(

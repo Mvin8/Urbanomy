@@ -7,7 +7,7 @@ import geopandas as gpd
 import numpy as np
 import pandas as pd
 
-from blocksnet.analysis.accessibility import area_accessibility
+from blocksnet.analysis.network.accessibility import area_accessibility
 from blocksnet.analysis.indicators import calculate_development_indicators
 from blocksnet.analysis.morphotypes import get_strelka_morphotypes
 from blocksnet.config import log_config

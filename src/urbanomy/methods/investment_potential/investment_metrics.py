@@ -185,6 +185,12 @@ class InvestmentAttractivenessAnalyzer:
         try:
             return LandUse(str(value))
         except ValueError as exc:
+            text = str(value).strip()
+            upper = text.upper()
+            if upper.startswith("LANDUSE."):
+                upper = upper.split(".", 1)[1]
+            if upper in LandUse.__members__:
+                return LandUse[upper]
             raise KeyError(f"Unknown land-use '{value}'") from exc
 
     def _normalise_benchmarks(

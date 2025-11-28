@@ -35,6 +35,7 @@ class LandDataPreparator:
         adjacency_radius: float = _constants.DEFAULT_ADJACENCY_RADIUS,
         sqm_per_person: float = _constants.DEFAULT_SQM_PER_PERSON,
         output_columns: Optional[Sequence[str]] = None,
+        predict_project_only: bool = False,
         log_level: str = 'WARNING',
     ) -> None:
         """Create a preparator configured with scenario, context, and matrices.
@@ -52,6 +53,10 @@ class LandDataPreparator:
         output_columns : Sequence[str], optional
             Desired output column ordering. Defaults to
             :data:`~urbanomy.methods.land_value_modeling.constants.DEFAULT_OUTPUT_COLUMNS`.
+        predict_project_only : bool, optional
+            When True, density indicators are predicted only for project blocks
+            (``is_project``). Context blocks keep their existing density values
+            (or zeros if missing).
         log_level : str, optional
             Logging level forwarded to ``blocksnet`` utilities.
         """
@@ -61,6 +66,7 @@ class LandDataPreparator:
         self.sqm_per_person = sqm_per_person
         self.output_columns = list(output_columns) if output_columns else list(self.DEFAULT_OUTPUT_COLUMNS)
         self._density_regressor = DensityRegressor()
+        self._predict_project_only = predict_project_only
         self._last_prepared: Optional[gpd.GeoDataFrame] = None
         self._log_level = log_level
 
@@ -348,11 +354,40 @@ class LandDataPreparator:
         pandas.DataFrame
             Density indicators aligned to ``blocks.index``.
         """
-        density_df = self._density_regressor.evaluate(blocks, adjacency_graph).copy()
-        density_df['fsi'] = density_df['fsi'].clip(lower=0)
-        density_df['gsi'] = density_df['gsi'].clip(lower=0, upper=1)
-        density_df['mxi'] = density_df['mxi'].clip(lower=0, upper=1)
-        density_df.loc[blocks['residential'] == 0, 'mxi'] = 0
+        project_only = self._predict_project_only
+        target_blocks = blocks
+        target_graph = adjacency_graph
+        density_columns = [
+            BlockColumn.FSI.value,
+            BlockColumn.GSI.value,
+            BlockColumn.MXI.value,
+        ]
+
+        if project_only:
+            project_mask = blocks[BlockColumn.IS_PROJECT.value]
+            target_blocks = blocks.loc[project_mask]
+            target_graph = adjacency_graph.subgraph(target_blocks.index)
+
+        if target_blocks.empty:
+            predicted = pd.DataFrame(index=target_blocks.index, columns=density_columns, dtype=float)
+        else:
+            predicted = self._density_regressor.evaluate(target_blocks, target_graph).copy()
+
+        density_df = pd.DataFrame(index=blocks.index, columns=density_columns, dtype=float)
+        existing_cols = [col for col in density_columns if col in blocks.columns]
+        if existing_cols:
+            density_df.loc[:, existing_cols] = blocks[existing_cols]
+
+        density_df.loc[target_blocks.index, :] = predicted
+        for col in density_columns:
+            density_df[col] = pd.to_numeric(density_df[col], errors='coerce')
+
+        density_df[BlockColumn.FSI.value] = density_df[BlockColumn.FSI.value].clip(lower=0)
+        density_df[BlockColumn.GSI.value] = density_df[BlockColumn.GSI.value].clip(lower=0, upper=1)
+        density_df[BlockColumn.MXI.value] = density_df[BlockColumn.MXI.value].clip(lower=0, upper=1)
+        density_df.loc[blocks[BlockColumn.RESIDENTIAL.value] == 0, BlockColumn.MXI.value] = 0
+        density_df = density_df.fillna(0)
+
         return density_df
 
     def _attach_development_indicators(self, blocks: gpd.GeoDataFrame, density_df: pd.DataFrame) -> None:

@@ -648,10 +648,12 @@ def _print_summary(
     threshold_note = f" (|Δ₽| > {eps:g})" if eps > 0 else ""
     print(f"\nСтатистика по кварталам в пределах буфера{threshold_note}:")
     if len(gdf):
-        print("index | до (₽) → после (₽) | Δ₽ | Δ%")
+        print("index | land_use | до (₽) → после (₽) | Δ₽ | Δ%")
+        land_use_key = BlockColumn.LAND_USE.value
         for idx, row in gdf.iterrows():
+            land_use = _format_land_use(row.get(land_use_key))
             print(
-                f"{idx} | {_fmt_rub(row['land_value_before'])} → {_fmt_rub(row['land_value_after'])} | "
+                f"{idx} | {land_use} | {_fmt_rub(row['land_value_before'])} → {_fmt_rub(row['land_value_after'])} | "
                 f"{_fmt_rub(row['d_rub'], signed=True)} | {_fmt_pct(row['d_pct'])}"
             )
     else:

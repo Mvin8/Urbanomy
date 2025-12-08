@@ -7,6 +7,7 @@ from typing import Any, Dict, Mapping, Sequence
 import geopandas as gpd
 import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
 from geopandas import GeoDataFrame
 from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
@@ -271,6 +272,7 @@ def plot_scenario_impact(
             eps=eps,
             total_summary=summary_all,
             total_count=int(len(clipped)),
+            target_idx=target_idx,
         )
 
     return {
@@ -629,6 +631,8 @@ def _print_summary(
     eps: float,
     total_summary: Dict[str, float] | None = None,
     total_count: int | None = None,
+    target_idx: int | None = None,
+    project_column: str = BlockColumn.IS_PROJECT.value,
 ) -> None:
     """Print human-readable summaries of scenario-induced price changes.
 
@@ -644,37 +648,78 @@ def _print_summary(
         Aggregated metrics for the entire buffer.
     total_count : int, optional
         Total number of buffered blocks.
+    target_idx : int, optional
+        Identifier of the modified block to highlight separately.
+    project_column : str, optional
+        Column indicating whether a block belongs to the project area.
     """
+    def _print_summary_block(title: str, stats: Dict[str, float] | None, *, count_override: int | None = None) -> None:
+        print(f"\n{title}:")
+        if not stats or stats["count"] == 0:
+            print(" Нет данных.")
+            return
+        print(" • Сумма до:   ", _fmt_rub(stats["sum_before"]))
+        print(" • Сумма после:", _fmt_rub(stats["sum_after"]))
+        print(" • Изм., ₽:    ", _fmt_rub(stats["delta"], signed=True))
+        print(" • Изм., %:    ", _fmt_pct(stats["delta_pct"]))
+        print(" • Территорий: ", count_override if count_override is not None else stats["count"])
+
+    def _print_row(idx, row) -> None:
+        land_use = _format_land_use(row.get(land_use_key))
+        print(
+            f"{idx} | {land_use} | {_fmt_rub(row['land_value_before'])} → "
+            f"{_fmt_rub(row['land_value_after'])} | {_fmt_rub(row['d_rub'], signed=True)} | "
+            f"{_fmt_pct(row['d_pct'])}"
+        )
+
     threshold_note = f" (|Δ₽| > {eps:g})" if eps > 0 else ""
-    print(f"\nСтатистика по кварталам в пределах буфера{threshold_note}:")
+    print(f"\nСтатистика по кварталам в контексте{threshold_note}:")
+    land_use_key = BlockColumn.LAND_USE.value
+
     if len(gdf):
+        project_mask = pd.Series(gdf.get(project_column, False), index=gdf.index).fillna(False).astype(bool)
+
+        print("\nИзменяемый квартал:")
         print("index | land_use | до (₽) → после (₽) | Δ₽ | Δ%")
-        land_use_key = BlockColumn.LAND_USE.value
-        for idx, row in gdf.iterrows():
-            land_use = _format_land_use(row.get(land_use_key))
-            print(
-                f"{idx} | {land_use} | {_fmt_rub(row['land_value_before'])} → {_fmt_rub(row['land_value_after'])} | "
-                f"{_fmt_rub(row['d_rub'], signed=True)} | {_fmt_pct(row['d_pct'])}"
-            )
+        if target_idx is not None and target_idx in gdf.index:
+            _print_row(target_idx, gdf.loc[target_idx])
+        else:
+            print("—")
+
+        project_rows = gdf[project_mask].drop(index=target_idx, errors="ignore")
+        context_rows = gdf[~project_mask].drop(index=target_idx, errors="ignore")
+
+        print("\nКварталы в границах проекта:")
+        if len(project_rows):
+            print("index | land_use | до (₽) → после (₽) | Δ₽ | Δ%")
+            for idx, row in project_rows.iterrows():
+                _print_row(idx, row)
+        else:
+            print("Нет кварталов проекта с изменениями выше порога.")
+
+        print("\nКварталы в контексте:")
+        if len(context_rows):
+            print("index | land_use | до (₽) → после (₽) | Δ₽ | Δ%")
+            for idx, row in context_rows.iterrows():
+                _print_row(idx, row)
+        else:
+            print("Нет кварталов контекста с изменениями выше порога.")
     else:
         print("Нет кварталов, у которых стоимость изменилась выше порога.")
 
-    print("\nСводка по кварталам с изменениями:")
-    print(" • Сумма до:   ", _fmt_rub(summary["sum_before"]))
-    print(" • Сумма после:", _fmt_rub(summary["sum_after"]))
-    print(" • Изм., ₽:    ", _fmt_rub(summary["delta"], signed=True))
-    print(" • Изм., %:    ", _fmt_pct(summary["delta_pct"]))
-    print(" • Территорий: ", summary["count"])
+    target_rows = gdf.loc[[target_idx]] if target_idx is not None and target_idx in gdf.index else gdf.iloc[0:0]
+    project_rows = gdf[project_mask].drop(index=target_idx, errors="ignore")
+    context_rows = gdf[~project_mask].drop(index=target_idx, errors="ignore")
 
-    if total_summary is not None:
-        print("\nСводка по буферу (все кварталы):")
-        print(" • Сумма до:   ", _fmt_rub(total_summary["sum_before"]))
-        print(" • Сумма после:", _fmt_rub(total_summary["sum_after"]))
-        print(" • Изм., ₽:    ", _fmt_rub(total_summary["delta"], signed=True))
-        print(" • Изм., %:    ", _fmt_pct(total_summary["delta_pct"]))
-        count = total_count if total_count is not None else total_summary.get("count")
-        if count is not None:
-            print(" • Территорий: ", count)
+    target_summary = _summarise_changes(target_rows)
+    project_summary = _summarise_changes(project_rows)
+    context_summary = _summarise_changes(context_rows)
+
+    _print_summary_block("Сводка по изменяемому кварталу", target_summary)
+    _print_summary_block("Сводка по проектной территории (изменения)", project_summary)
+    _print_summary_block("Сводка по контексту (изменения)", context_summary)
+    _print_summary_block("Сводка по всем изменениям", summary)
+
 
 
 def _fmt_rub(value: float, *, signed: bool = False, digits: int = 0) -> str:

@@ -153,6 +153,10 @@ Reproducible pipelines live in ``examples/``:
 
 All notebooks rely on sample assets committed to ``examples/data`` (GeoJSON blocks, accessibility matrices, CatBoost weights, and prepared pickle files). When running the notebooks from another working directory, point the loaders to that folder or provide equivalent datasets in the same structure.
 
+Data repository
+---------------
+The data required by the library is available in a dedicated repository: `Urbanomy-data <https://github.com/Mvin8/Urbanomy-data.git>`_.
+
 Documentation
 -------------
 The latest documentation is published automatically from ``main``:

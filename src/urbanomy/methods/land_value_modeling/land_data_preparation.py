@@ -29,8 +29,8 @@ class LandDataPreparator:
 
     def __init__(
         self,
-        scenario_blocks_source: BlocksInput,
-        context_blocks_source: BlocksInput,
+        scenario_blocks_source: Optional[BlocksInput],
+        context_blocks_source: Optional[BlocksInput],
         *,
         adjacency_radius: float = _constants.DEFAULT_ADJACENCY_RADIUS,
         sqm_per_person: float = _constants.DEFAULT_SQM_PER_PERSON,
@@ -43,9 +43,12 @@ class LandDataPreparator:
         Parameters
         ----------
         scenario_blocks_source : BlocksInput
-            Base source representing scenario blocks.
-        context_blocks_source : BlocksInput
-            Base source representing context blocks.
+            Base source representing scenario blocks. When ``None``, all blocks
+            are treated as context and marked ``is_project=False``.
+        context_blocks_source : BlocksInput or None
+            Base source representing context blocks. When ``None`` and
+            ``scenario_blocks_source`` is provided, the scenario input is used
+            as context and all blocks are marked ``is_project=False``.
         adjacency_radius : float, optional
             Radius (metres) for adjacency graph construction.
         sqm_per_person : float, optional
@@ -115,7 +118,8 @@ class LandDataPreparator:
             when omitted.
         context_blocks : BlocksInput, optional
             Context blocks override. Falls back to ``context_blocks_source``
-            when omitted.
+            when omitted. When neither scenario nor context is provided, a
+            ``ValueError`` is raised.
 
         Returns
         -------
@@ -123,8 +127,12 @@ class LandDataPreparator:
             Prepared dataset containing engineered indicators and metadata.
         """
         with self._temporary_log_level():
-            scenario_source = scenario_blocks if scenario_blocks is not None else self._scenario_source
-            context_source = context_blocks if context_blocks is not None else self._context_source
+            scenario_source = self._normalize_source(
+                scenario_blocks if scenario_blocks is not None else self._scenario_source
+            )
+            context_source = self._normalize_source(
+                context_blocks if context_blocks is not None else self._context_source
+            )
             blocks = self._build_blocks(scenario_source, context_source)
             self._ensure_land_use_enum(blocks)
             self._clamp_land_use(blocks)
@@ -141,29 +149,43 @@ class LandDataPreparator:
 
     def _build_blocks(
         self,
-        scenario_source: BlocksInput,
-        context_source: BlocksInput,
+        scenario_source: Optional[BlocksInput],
+        context_source: Optional[BlocksInput],
     ) -> gpd.GeoDataFrame:
         """Combine scenario and context blocks into a unified GeoDataFrame.
 
         Parameters
         ----------
-        scenario_source : BlocksInput
-            Scenario block data or stream.
-        context_source : BlocksInput
-            Context block data or stream.
+        scenario_source : BlocksInput or None
+            Scenario block data or stream. When ``None``, all blocks are treated
+            as context.
+        context_source : BlocksInput or None
+            Context block data or stream. When ``None``, the scenario input is
+            reused as context and all blocks are treated as non-project.
 
         Returns
         -------
         geopandas.GeoDataFrame
             Concatenated blocks with ``site_area`` and ``is_project`` columns.
         """
-        scenario = self._resolve_blocks_input(scenario_source)
-        context = self._resolve_blocks_input(context_source)
+        if scenario_source is None and context_source is None:
+            raise ValueError("At least one of scenario_blocks_source or context_blocks_source must be provided.")
+
+        scenario = self._resolve_blocks_input(scenario_source) if scenario_source is not None else None
+        context = self._resolve_blocks_input(context_source) if context_source is not None else None
+
+        if context is None and scenario is not None:
+            context = scenario
+            scenario = self._empty_geo_like(context)
+        elif scenario is None and context is not None:
+            scenario = self._empty_geo_like(context)
+
         if scenario.crs and context.crs and scenario.crs != context.crs:
             context = context.to_crs(scenario.crs)
+        geom_name = scenario.geometry.name
+        crs = scenario.crs or context.crs
         blocks = pd.concat([scenario, context], ignore_index=True)
-        blocks = gpd.GeoDataFrame(blocks, geometry=scenario.geometry.name, crs=scenario.crs)
+        blocks = gpd.GeoDataFrame(blocks, geometry=geom_name, crs=crs)
         blocks[BlockColumn.SITE_AREA.value] = blocks.geometry.area
         blocks[BlockColumn.IS_PROJECT.value] = LandDataPreparator.mark_scenario_blocks(blocks, scenario)
         return blocks
@@ -187,6 +209,13 @@ class LandDataPreparator:
         """
         loaded = self._load_dataframe_from_source(source)
         return self._ensure_geodataframe(loaded)
+
+    @staticmethod
+    def _normalize_source(source: Optional[BlocksInput]) -> Optional[BlocksInput]:
+        """Treat explicit ``False`` as a request to disable the source."""
+        if source is False:  # type: ignore[comparison-overlap]
+            return None
+        return source
 
     @staticmethod
     def _load_dataframe_from_source(source: BlocksInput) -> DataFrameLike:
@@ -259,6 +288,17 @@ class LandDataPreparator:
             raise ValueError("The provided DataFrame must contain a 'geometry' column.")
         crs = getattr(data, 'crs', None)
         return gpd.GeoDataFrame(data.copy(), geometry='geometry', crs=crs)
+
+    @staticmethod
+    def _empty_geo_like(template: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+        """Create an empty GeoDataFrame matching geometry name/CRS of template."""
+        geom_name = template.geometry.name if hasattr(template, "geometry") else "geometry"
+        columns = list(template.columns)
+        if geom_name not in columns:
+            columns.append(geom_name)
+        empty = gpd.GeoDataFrame(columns=columns, geometry=geom_name, crs=getattr(template, "crs", None))
+        empty[geom_name] = empty[geom_name].astype(object)
+        return empty
 
     @staticmethod
     def mark_scenario_blocks(

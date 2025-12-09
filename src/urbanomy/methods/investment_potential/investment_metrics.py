@@ -503,12 +503,28 @@ class InvestmentAttractivenessAnalyzer:
         tuple[pandas.Series, pandas.Series, float, float]
             Spatial weights, economic weights, and their respective means.
         """
-        spatial_lookup = {lu: weights[0] for lu, weights in self.weights.items()}
-        economic_lookup = {lu: weights[1] for lu, weights in self.weights.items()}
-        ws_mean = float(np.mean(list(spatial_lookup.values()))) if spatial_lookup else 0.5
-        we_mean = float(np.mean(list(economic_lookup.values()))) if economic_lookup else 0.5
-        spatial_weights = land_use_series.map(spatial_lookup).fillna(ws_mean)
-        economic_weights = land_use_series.map(economic_lookup).fillna(we_mean)
+        def _to_enum(value: Any) -> LandUse | None:
+            try:
+                return self._coerce_land_use(value)
+            except Exception:
+                return None
+
+        spatial_lookup = {lu: weights[0] for lu, weights in self._weights_enum.items()}
+        economic_lookup = {lu: weights[1] for lu, weights in self._weights_enum.items()}
+
+        enum_series = land_use_series.map(_to_enum)
+        spatial_mapped = enum_series.map(spatial_lookup)
+        economic_mapped = enum_series.map(economic_lookup)
+
+        # Use the average of present weights for project-level aggregation; fall back to
+        # overall lookup mean (or 0.5) when no valid values are present.
+        ws_mean_lookup = float(np.mean(list(spatial_lookup.values()))) if spatial_lookup else 0.5
+        we_mean_lookup = float(np.mean(list(economic_lookup.values()))) if economic_lookup else 0.5
+        ws_mean = float(np.nanmean(spatial_mapped)) if spatial_mapped.notna().any() else ws_mean_lookup
+        we_mean = float(np.nanmean(economic_mapped)) if economic_mapped.notna().any() else we_mean_lookup
+
+        spatial_weights = spatial_mapped.fillna(ws_mean)
+        economic_weights = economic_mapped.fillna(we_mean)
         return spatial_weights, economic_weights, ws_mean, we_mean
 
     def calculate_investment_metrics(

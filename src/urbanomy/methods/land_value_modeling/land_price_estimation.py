@@ -234,6 +234,9 @@ def transfer_baseline_prices(
     scenario_column: str = "is_project",
     output_column: str = "land_value_before",
     area_column: str = "site_area",
+    scenario_mode: bool = True,
+    unit_price_column: str = "land_value_per_100m2",
+    unit_price_output_column: str = "land_value_before_per_100m2",
 ) -> gpd.GeoDataFrame:
     """Project baseline land prices from historical blocks onto scenario blocks.
 
@@ -261,6 +264,18 @@ def transfer_baseline_prices(
     area_column : str, optional
         Column describing block areas in square metres. When missing or
         containing non-positive values, geometry-derived areas are used.
+    scenario_mode : bool, optional
+        When ``True`` (по умолчанию) ожидает наличие ``scenario_column`` и
+        переносит цены только для проектных кварталов с учетом пересечений
+        геометрий. Когда ``False``, работает в упрощенном режиме: не требует
+        столбца проекта и просто сопоставляет цены по ``id_column`` без
+        пространственного переноса.
+    unit_price_column : str, optional
+        Имя колонки в ``before_blocks`` с уже рассчитанной удельной ценой
+        (например, ``land_value_per_100m2``).
+    unit_price_output_column : str, optional
+        Имя колонки в возвращаемом GeoDataFrame для удельной цены "до"
+        (например, ``land_value_before_per_100m2``).
 
     Returns
     -------
@@ -273,9 +288,15 @@ def transfer_baseline_prices(
     KeyError
         If required columns are missing from the input GeoDataFrames.
     """
+    required_after = {id_column}
+    required_before = {id_column, price_column}
+    if scenario_mode:
+        required_after.add(scenario_column)
+        required_before.add(scenario_column)
+
     for frame_name, frame, required in (
-        ("after_blocks", after_blocks, {id_column, scenario_column}),
-        ("before_blocks", before_blocks, {id_column, price_column, scenario_column}),
+        ("after_blocks", after_blocks, required_after),
+        ("before_blocks", before_blocks, required_before),
     ):
         missing = [column for column in required if column not in frame.columns]
         if missing:
@@ -290,11 +311,22 @@ def transfer_baseline_prices(
 
     result = after_blocks.copy()
     baseline_column = "_baseline_price"
+    baseline_unit_column = "_baseline_unit_price"
+
     baseline_mapping = (
         before_blocks[[id_column, price_column]]
         .drop_duplicates(subset=id_column)
         .rename(columns={price_column: baseline_column})
     )
+    if unit_price_column in before_blocks.columns:
+        unit_map = (
+            before_blocks[[id_column, unit_price_column]]
+            .drop_duplicates(subset=id_column)
+            .rename(columns={unit_price_column: baseline_unit_column})
+        )
+        baseline_mapping = baseline_mapping.merge(unit_map, on=id_column, how="left")
+    else:
+        baseline_mapping[baseline_unit_column] = np.nan
 
     def _resolve_area(df: gpd.GeoDataFrame) -> np.ndarray:
         if area_column in df.columns:
@@ -312,71 +344,108 @@ def transfer_baseline_prices(
         merged = df.merge(baseline_mapping, on=id_column, how="left")
         if output_column not in merged.columns:
             merged[output_column] = np.nan
-        non_scenario_mask = ~merged[scenario_column].fillna(False).astype(bool)
-        merged.loc[non_scenario_mask, output_column] = merged.loc[non_scenario_mask, output_column].fillna(
-            merged.loc[non_scenario_mask, baseline_column]
+        if unit_price_output_column not in merged.columns:
+            merged[unit_price_output_column] = np.nan
+
+        if scenario_mode:
+            non_scenario_mask = ~merged[scenario_column].fillna(False).astype(bool)
+            merged.loc[non_scenario_mask, output_column] = merged.loc[non_scenario_mask, output_column].fillna(
+                merged.loc[non_scenario_mask, baseline_column]
+            )
+            merged.loc[non_scenario_mask, unit_price_output_column] = merged.loc[
+                non_scenario_mask, unit_price_output_column
+            ].fillna(merged.loc[non_scenario_mask, baseline_unit_column])
+        else:
+            merged[output_column] = merged[output_column].fillna(merged[baseline_column])
+            merged[unit_price_output_column] = merged[unit_price_output_column].fillna(merged[baseline_unit_column])
+
+        return merged.drop(columns=[baseline_column, baseline_unit_column])
+
+    if not scenario_mode:
+        # Упрощенный режим: без переноса геометрией, просто перенос цены по id.
+        if result.empty or before_blocks.empty:
+            simplified = gpd.GeoDataFrame(
+                _apply_baseline(result),
+                geometry=after_geom_col,
+                crs=after_blocks.crs,
+            )
+        else:
+            simplified = gpd.GeoDataFrame(
+                _apply_baseline(result),
+                geometry=after_geom_col,
+                crs=after_blocks.crs,
+            )
+        enriched = simplified
+    else:
+        if result.empty or before_blocks.empty:
+            enriched = gpd.GeoDataFrame(
+                _apply_baseline(result),
+                geometry=after_geom_col,
+                crs=after_blocks.crs,
+            )
+        else:
+            before_blocks = before_blocks.copy()
+            before_blocks["area_before"] = before_blocks.geometry.area
+            before_blocks["unit_price_before"] = np.where(
+                before_blocks["area_before"] > 0,
+                before_blocks[price_column] / before_blocks["area_before"],
+                np.nan,
+            )
+
+            intersections = gpd.overlay(
+                result[[id_column, after_geom_col]],
+                before_blocks[["unit_price_before", before_geom_col]],
+                how="intersection",
+                keep_geom_type=False,
+            )
+
+            if intersections.empty:
+                enriched = gpd.GeoDataFrame(
+                    _apply_baseline(result),
+                    geometry=after_geom_col,
+                    crs=after_blocks.crs,
+                )
+            else:
+                intersections["intersect_area"] = intersections.geometry.area
+                area_sum = (
+                    intersections.groupby(id_column, as_index=False)["intersect_area"]
+                    .sum()
+                    .rename(columns={"intersect_area": "id_total_area"})
+                )
+                intersections = intersections.merge(area_sum, on=id_column, how="left")
+
+                intersections["weight"] = np.divide(
+                    intersections["intersect_area"],
+                    intersections["id_total_area"],
+                    out=np.zeros_like(intersections["intersect_area"]),
+                    where=intersections["id_total_area"] > 0,
+                )
+                intersections["contrib"] = intersections["unit_price_before"] * intersections["weight"]
+
+                price_transfer = (
+                    intersections.groupby(id_column, as_index=False)["contrib"]
+                    .sum()
+                    .rename(columns={"contrib": "unit_price_before_weighted"})
+                )
+
+                area_lookup = result[[id_column]].copy()
+                area_lookup["_resolved_area"] = _resolve_area(result)
+                price_transfer = price_transfer.merge(area_lookup, on=id_column, how="left")
+                price_transfer[output_column] = price_transfer["unit_price_before_weighted"] * price_transfer["_resolved_area"]
+                merged = result.merge(price_transfer[[id_column, output_column]], on=id_column, how="left")
+
+                enriched = gpd.GeoDataFrame(
+                    _apply_baseline(merged),
+                    geometry=after_geom_col,
+                    crs=after_blocks.crs,
+                )
+
+    # Процентное изменение полной стоимости участка
+    if output_column in enriched.columns and "land_value" in enriched.columns:
+        enriched["land_value_delta_pct"] = np.where(
+            enriched[output_column] > 0,
+            (enriched["land_value"] / enriched[output_column] - 1.0) * 100,
+            np.nan,
         )
-        return merged.drop(columns=[baseline_column])
 
-    if result.empty or before_blocks.empty:
-        return gpd.GeoDataFrame(
-            _apply_baseline(result),
-            geometry=after_geom_col,
-            crs=after_blocks.crs,
-        )
-
-    before_blocks = before_blocks.copy()
-    before_blocks["area_before"] = before_blocks.geometry.area
-    before_blocks["unit_price_before"] = np.where(
-        before_blocks["area_before"] > 0,
-        before_blocks[price_column] / before_blocks["area_before"],
-        np.nan,
-    )
-
-    intersections = gpd.overlay(
-        result[[id_column, after_geom_col]],
-        before_blocks[["unit_price_before", before_geom_col]],
-        how="intersection",
-        keep_geom_type=False,
-    )
-
-    if intersections.empty:
-        return gpd.GeoDataFrame(
-            _apply_baseline(result),
-            geometry=after_geom_col,
-            crs=after_blocks.crs,
-        )
-
-    intersections["intersect_area"] = intersections.geometry.area
-    area_sum = (
-        intersections.groupby(id_column, as_index=False)["intersect_area"]
-        .sum()
-        .rename(columns={"intersect_area": "id_total_area"})
-    )
-    intersections = intersections.merge(area_sum, on=id_column, how="left")
-
-    intersections["weight"] = np.divide(
-        intersections["intersect_area"],
-        intersections["id_total_area"],
-        out=np.zeros_like(intersections["intersect_area"]),
-        where=intersections["id_total_area"] > 0,
-    )
-    intersections["contrib"] = intersections["unit_price_before"] * intersections["weight"]
-
-    price_transfer = (
-        intersections.groupby(id_column, as_index=False)["contrib"]
-        .sum()
-        .rename(columns={"contrib": "unit_price_before_weighted"})
-    )
-
-    area_lookup = result[[id_column]].copy()
-    area_lookup["_resolved_area"] = _resolve_area(result)
-    price_transfer = price_transfer.merge(area_lookup, on=id_column, how="left")
-    price_transfer[output_column] = price_transfer["unit_price_before_weighted"] * price_transfer["_resolved_area"]
-    merged = result.merge(price_transfer[[id_column, output_column]], on=id_column, how="left")
-
-    return gpd.GeoDataFrame(
-        _apply_baseline(merged),
-        geometry=after_geom_col,
-        crs=after_blocks.crs,
-    )
+    return enriched

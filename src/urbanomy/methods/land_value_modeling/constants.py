@@ -14,7 +14,6 @@ ORIGINAL_FEATURES: Sequence[str] = (
     "transport",
     "special",
     "agriculture",
-    "land_use",
     "share",
     "footprint_area",
     "build_floor_area",
@@ -26,8 +25,9 @@ ORIGINAL_FEATURES: Sequence[str] = (
     "gsi",
     "mxi",
     "l",
-    "morphotype",
     "area_accessibility",
+    "land_use",
+    "morphotype",
 )
 """Ordered list of base features used by the land price model."""
 

@@ -362,7 +362,6 @@ def transfer_baseline_prices(
         return merged.drop(columns=[baseline_column, baseline_unit_column])
 
     if not scenario_mode:
-        # Упрощенный режим: без переноса геометрией, просто перенос цены по id.
         if result.empty or before_blocks.empty:
             simplified = gpd.GeoDataFrame(
                 _apply_baseline(result),
@@ -440,7 +439,6 @@ def transfer_baseline_prices(
                     crs=after_blocks.crs,
                 )
 
-    # Процентное изменение полной стоимости участка
     if output_column in enriched.columns and "land_value" in enriched.columns:
         enriched["land_value_delta_pct"] = np.where(
             enriched[output_column] > 0,

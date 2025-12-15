@@ -213,16 +213,8 @@ def plot_scenario_impact(
     if plot_column not in combined.columns:
         raise KeyError(f"blocks is missing plot_column: {plot_column}")
 
-    if len(changed):
-        plot_series = pd.to_numeric(changed[plot_column], errors="coerce")
-        if plot_series.notna().any():
-            q_low, q_high = plot_series.quantile([0.02, 0.98]).astype(float)
-            lim = float(max(abs(q_low), abs(q_high)))
-            vmin, vmax = -lim, lim
-        else:
-            vmin, vmax = -1.0, 1.0
-    else:
-        vmin, vmax = -1.0, 1.0
+    # Use a fixed symmetric percentage scale for consistent maps
+    vmin, vmax = -20.0, 20.0
 
     fig = _plot_change_map(
         changed=changed,

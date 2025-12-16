@@ -92,6 +92,7 @@ class LandPriceEstimator:
         """
 
         design_matrix = self._design_matrix(self._blocks)
+        design_matrix = self._align_features_to_model(design_matrix)
         y_log = self.model.predict(design_matrix)
 
         blocks_pred = self._blocks.copy()
@@ -209,6 +210,19 @@ class LandPriceEstimator:
         if not lag_parts:
             return pd.DataFrame(index=blocks.index)
         return pd.concat(lag_parts, axis=1)
+
+    def _align_features_to_model(self, design_matrix: pd.DataFrame) -> pd.DataFrame:
+        """Reorder/validate columns to match the fitted model's feature layout."""
+        model_features = getattr(self.model, "feature_names_", None)
+        if not model_features:
+            return design_matrix
+
+        missing = [name for name in model_features if name not in design_matrix.columns]
+        if missing:
+            raise ValueError(
+                "Design matrix is missing features expected by the model: " + ", ".join(sorted(missing))
+            )
+        return design_matrix.reindex(columns=model_features)
 
     def _validate_inputs(self) -> None:
         """Ensure that all required features are present in the blocks dataset.

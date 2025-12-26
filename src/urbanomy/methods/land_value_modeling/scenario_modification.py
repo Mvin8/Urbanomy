@@ -182,6 +182,7 @@ def plot_scenario_impact(
     combined = blocks.copy()
     combined["land_value_before"] = combined[before_column].astype(float)
     combined["land_value_after"] = combined[after_column].astype(float)
+    combined = _ensure_valid_geoms(combined)
 
     if target_id_column not in combined.columns:
         raise KeyError(f"blocks is missing target_id_column: {target_id_column}")
@@ -204,6 +205,7 @@ def plot_scenario_impact(
     combined["d_pct"] = combined["d_pct"].replace([np.inf, -np.inf], np.nan)
 
     buffer_gdf = _build_buffer(combined, resolved_target_idx, buffer_radius)
+    buffer_gdf = _ensure_valid_geoms(buffer_gdf)
     clipped = gpd.clip(combined, buffer_gdf) if len(combined) else combined
 
     changed = clipped[np.abs(clipped["d_rub"].astype(float)) > eps].copy()
@@ -274,6 +276,30 @@ def _build_buffer(blocks: GeoDataFrame, target_idx: int, radius_m: float) -> Geo
     else:
         buf = buf.buffer(radius_m)
     return gpd.GeoDataFrame(geometry=buf, crs=blocks.crs)
+
+
+def _ensure_valid_geoms(gdf: GeoDataFrame) -> GeoDataFrame:
+    """Fix invalid geometries to avoid GEOS TopologyException during overlays/clipping."""
+    if gdf.empty or gdf.geometry is None:
+        return gdf
+
+    geom = gdf.geometry
+    try:
+        invalid_mask = ~geom.is_valid
+    except Exception:
+        invalid_mask = pd.Series(False, index=gdf.index)
+
+    if not invalid_mask.any():
+        return gdf
+
+    fixed = geom.copy()
+    try:
+        from shapely.validation import make_valid  # type: ignore
+        fixed.loc[invalid_mask] = geom.loc[invalid_mask].apply(make_valid)
+    except Exception:
+        fixed.loc[invalid_mask] = geom.loc[invalid_mask].buffer(0)
+
+    return gdf.set_geometry(fixed)
 
 
 def _plot_change_map(

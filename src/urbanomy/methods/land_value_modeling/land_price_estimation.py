@@ -11,7 +11,7 @@ from libpysal.weights import DistanceBand, lag_spatial
 
 from blocksnet.enums import LandUse
 
-from .constants import CATEGORICAL_FEATURES, ORIGINAL_FEATURES, RADIUS_LIST
+from .constants import CATEGORICAL_FEATURES, ORIGINAL_FEATURES, RADIUS_LIST, SERVICE_FEATURES
 
 
 class LandPriceEstimator:
@@ -48,6 +48,8 @@ class LandPriceEstimator:
         radius_list: Sequence[float] | None = None,
         orig_features: Sequence[str] | None = None,
         categorical_features: Sequence[str] | None = None,
+        use_service_features: bool = False,
+        service_features: Sequence[str] | None = None,
     ) -> None:
         """Initialise the estimator with model, data and feature configuration.
 
@@ -65,11 +67,22 @@ class LandPriceEstimator:
             Feature names supplied to the estimator.
         categorical_features : Sequence[str], optional
             Subset of features that should be treated as categorical.
+        use_service_features : bool, optional
+            When ``True`` дополнительно включает сервисные признаки вроде
+            ``count_*`` и ``osr``/``share_*``. Полезно, если модель обучена с
+            такими колонками. По умолчанию выключено для обратной совместимости.
+        service_features : Sequence[str], optional
+            Явный список сервисных признаков, если нужно переопределить
+            стандартный набор ``SERVICE_FEATURES``.
         """
         self.model = model
         self._blocks = blocks.copy()
         self._radii = tuple(radius_list) if radius_list is not None else tuple(self.DEFAULT_RADII)
-        self._orig_features = tuple(orig_features) if orig_features is not None else tuple(self.DEFAULT_FEATURES)
+        base_features = tuple(orig_features) if orig_features is not None else tuple(self.DEFAULT_FEATURES)
+        self._service_features = tuple(service_features) if service_features is not None else tuple(SERVICE_FEATURES)
+        if use_service_features and self._service_features:
+            base_features = tuple(dict.fromkeys([*base_features, *self._service_features]))
+        self._orig_features = base_features
         self._categorical_features = (
             tuple(categorical_features)
             if categorical_features is not None

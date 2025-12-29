@@ -8,11 +8,14 @@ import geopandas as gpd
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+import copy
+import random
 from geopandas import GeoDataFrame
 from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
 from matplotlib.transforms import offset_copy
-
+from blocksnet.analysis.indicators import calculate_density_indicators
+from blocksnet.analysis.morphotypes import get_strelka_morphotypes
 from blocksnet.enums import LandUse
 
 from .constants import (
@@ -154,6 +157,220 @@ class ScenarioTEPModifier:
         except KeyError as exc:
             raise ValueError(f"Unknown land_use value: {value!r}") from exc
 
+class GeneticOptimizer:
+    """Optimize scenario modifications using a genetic algorithm for one block considering city-wide impact."""
+    def __init__(self,
+                 *,
+                 model,
+                 blocks_before,
+                 target_idx: int,
+                 constraints: dict,
+                 estimator_kwargs: dict,
+                 eps: float = 1e-9,
+                 random_state: int | None = None):
+        self.model = model
+        self.blocks_before = blocks_before.copy()
+        self.target_idx = target_idx
+        self.constraints = constraints
+        self.estimator_kwargs = estimator_kwargs
+        self.eps = eps
+        self.rng = random.Random(random_state)
+
+        # baseline для суммарной стоимости города
+        self._baseline_value = self._predict_total(blocks_before)
+
+    def _predict_total(self, blocks):
+        estimator = LandPriceEstimator(
+            model=self.model,
+            blocks=blocks,
+            **self.estimator_kwargs
+        )
+        pred = estimator.predict()["land_value"]
+        return float(pred.sum())
+
+    # ----------------------------
+    # Геном и мутация
+    # ----------------------------
+    def _random_genome(self):
+        g = {}
+        for k, c in self.constraints.items():
+            if c["type"] == "float":
+                g[k] = self.rng.uniform(c["min"], c["max"])
+            elif c["type"] == "int":
+                g[k] = self.rng.randint(c["min"], c["max"])
+            elif c["type"] == "cat":
+                g[k] = self.rng.choice(c["values"])
+        return self._repair_genome(g)
+
+    def _crossover(self, g1, g2):
+        child = {k: g1[k] if self.rng.random() < 0.5 else g2[k] for k in g1}
+        return self._repair_genome(child)
+
+    def _mutate(self, genome, p):
+        for k, c in self.constraints.items():
+            if self.rng.random() < p:
+                if c["type"] == "float":
+                    span = c["max"] - c["min"]
+                    genome[k] += self.rng.uniform(-0.1, 0.1) * span
+                elif c["type"] == "int":
+                    genome[k] = self.rng.randint(c["min"], c["max"])
+                elif c["type"] == "cat":
+                    genome[k] = self.rng.choice(c["values"])
+        return self._repair_genome(genome)
+
+    # ----------------------------
+    # Репарация генома
+    # ----------------------------
+    def _repair_genome(self, genome: dict) -> dict:
+        row = self.blocks_before.loc[self.target_idx]
+        site_area = float(row["site_area"])
+
+        # footprint_area <= 0.8 * site_area
+        genome["footprint_area"] = min(genome.get("footprint_area", 0), 0.8 * site_area)
+
+        # build_floor_area >= footprint_area
+        genome["build_floor_area"] = max(genome.get("build_floor_area", 0), genome["footprint_area"])
+
+        # living_area <= build_floor_area
+        genome["living_area"] = min(genome.get("living_area", 0), genome["build_floor_area"])
+
+        # non_living_area = build_floor_area - living_area
+        genome["non_living_area"] = genome["build_floor_area"] - genome["living_area"]
+
+        # population = living_area / 20
+        genome["population"] = genome["living_area"] / 20
+
+        # --- Нормализуем доли land_use ---
+        land_use_keys = ["residential", "business", "recreation", "industrial",
+                        "transport", "special", "agriculture"]
+
+        total = sum(genome.get(k, 0.0) for k in land_use_keys)
+        if total > 0:
+            for k in land_use_keys:
+                if genome.get(k, 0.0) < 0:
+                    genome[k] = 0.0
+                genome[k] = genome.get(k, 0.0) / total
+        else:
+            # если все нули, делаем residential = 1
+            genome["residential"] = 1.0
+            for k in land_use_keys[1:]:
+                genome[k] = 0.0
+
+        land_use_map = {
+            "residential": LandUse.RESIDENTIAL,
+            "business": LandUse.BUSINESS,
+            "recreation": LandUse.RECREATION,
+            "industrial": LandUse.INDUSTRIAL,
+            "transport": LandUse.TRANSPORT,
+            "special": LandUse.SPECIAL,
+            "agriculture": LandUse.AGRICULTURE,
+        }
+
+        dominant_key = max(land_use_keys, key=lambda k: genome[k])
+        genome["land_use"] = land_use_map[dominant_key]
+
+        return genome
+
+    # ----------------------------
+    # Фитнес (влияние на весь город)
+    # ----------------------------
+    def fitness(self, genome: dict) -> float:
+        blocks_after = self.blocks_before.copy()
+        genome = self._repair_genome(genome)
+
+        for k, v in genome.items():
+            blocks_after.at[self.target_idx, k] = v
+
+        total_value = self._predict_total(blocks_after)
+        return total_value - self._baseline_value
+
+    # ----------------------------
+    # Оптимизация
+    # ----------------------------
+    def optimize(
+        self,
+        *,
+        population_size: int = 30,
+        generations: int = 40,
+        elite_frac: float = 0.2,
+        mutation_p: float = 0.1,
+        verbose: bool = True
+    ):
+        population = [self._random_genome() for _ in range(population_size)]
+        best_score = -np.inf
+        best_genome = None
+
+        for gen in range(generations):
+            scored = [(self.fitness(g), g) for g in population]
+            scored.sort(key=lambda x: x[0], reverse=True)
+
+            if scored[0][0] > best_score:
+                best_score, best_genome = scored[0]
+
+            if verbose:
+                print(f"Gen {gen}: best = {scored[0][0]:.4f}")
+
+            elite_n = max(1, int(population_size * elite_frac))
+            elite = [copy.deepcopy(g) for _, g in scored[:elite_n]]
+
+            new_population = elite.copy()
+            while len(new_population) < population_size:
+                p1, p2 = self.rng.sample(elite, 2)
+                child = self._crossover(p1, p2)
+                child = self._mutate(child, mutation_p)
+                new_population.append(child)
+
+            population = new_population
+
+        return best_score, best_genome
+
+    # ----------------------------
+    # Применить решение
+    # ----------------------------
+    def apply_solution(self, genome):
+        blocks_after = self.blocks_before.copy()
+        genome = self._repair_genome(genome)
+        for k, v in genome.items():
+            blocks_after.at[self.target_idx, k] = v
+
+        
+        land_use_map = {
+            "residential": LandUse.RESIDENTIAL,
+            "business": LandUse.BUSINESS,
+            "recreation": LandUse.RECREATION,
+            "industrial": LandUse.INDUSTRIAL,
+            "transport": LandUse.TRANSPORT,
+            "special": LandUse.SPECIAL,
+            "agriculture": LandUse.AGRICULTURE,
+        }
+
+        row = blocks_after.loc[self.target_idx]
+        dominant_lu = max(land_use_map.keys(), key=lambda k: row[k])
+        blocks_after.at[self.target_idx, "land_use"] = land_use_map[dominant_lu]
+         
+        blocks_di = calculate_density_indicators(blocks_after[[
+            'site_area',
+            'footprint_area',
+            'build_floor_area',
+            'living_area'
+        ]])
+
+        blocks_after.loc[:, blocks_di.columns] = blocks_di
+        blocks_mt = get_strelka_morphotypes(blocks_after)
+        blocks_after.loc[:, blocks_mt.columns] = blocks_mt
+        return blocks_after
+
+    def plot_best(self, genome, **plot_kwargs):
+        blocks_after = self.apply_solution(genome)
+        return plot_scenario_impact(
+            blocks_before=self.blocks_before,
+            blocks_after=blocks_after,
+            model=self.model,
+            orig_features=self.estimator_kwargs.get("orig_features"),
+            categorical_features=self.estimator_kwargs.get("categorical_features"),
+            target_idx=self.target_idx,
+            **plot_kwargs,
+        )
 
 def plot_scenario_impact(
     *,

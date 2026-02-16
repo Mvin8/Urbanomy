@@ -21,6 +21,7 @@ from blocksnet.enums import LandUse
 from .constants import (
     BlockColumn,
     CATEGORICAL_FEATURES,
+    DEFAULT_SQM_PER_PERSON,
     ORIGINAL_FEATURES,
     RADIUS_LIST,
     ScenarioResultKey,
@@ -96,14 +97,17 @@ class ScenarioTEPModifier:
         live = float(row.get(living_key, df.at[target_idx, living_key]))
         non = row.get(non_living_key, np.nan)
 
+        build = max(build, 0.0)
+        if living_key not in changes and ((mxi_key in changes) or (mxi_key in row)):
+            mxi = float(row.get(mxi_key, df.at[target_idx, mxi_key]))
+            mxi = float(np.clip(mxi, 0.0, 1.0))
+            live = mxi * build
+        live = float(np.clip(live, 0.0, build))
+
         if not np.isfinite(non):
-            if build_key in changes and living_key in changes:
-                non = max(build - live, 0.0)
-            elif (mxi_key in changes) or (mxi_key in row):
-                mxi = float(row.get(mxi_key, df.at[target_idx, mxi_key]))
-                non = max(mxi * build, 0.0)
-            else:
-                non = float(df.at[target_idx, non_living_key])
+            non = max(build - live, 0.0)
+        else:
+            non = max(float(non), 0.0)
 
         if (non_living_key in changes and living_key in changes) and (build_key not in changes):
             build = live + float(non)
@@ -113,13 +117,13 @@ class ScenarioTEPModifier:
         row[non_living_key] = float(non)
 
         footprint = float(row.get(footprint_key, df.at[target_idx, footprint_key]))
-        population = float(row.get(population_key, df.at[target_idx, population_key]))
+        row[population_key] = live / DEFAULT_SQM_PER_PERSON if DEFAULT_SQM_PER_PERSON > 0 else 0.0
 
         row[BlockColumn.FSI.value] = build / site_area if site_area > 0 else np.nan
         row[BlockColumn.GSI.value] = footprint / site_area if site_area > 0 else np.nan
-        row[mxi_key] = (row[non_living_key] / build) if build > 0 else 0.0
-        row[BlockColumn.L.value] = (build / population) if population > 0 else np.nan
-        row[BlockColumn.OSR.value] = (site_area - footprint) / site_area if site_area > 0 else np.nan
+        row[mxi_key] = (row[living_key] / build) if build > 0 else np.nan
+        row[BlockColumn.L.value] = (build / footprint) if footprint > 0 else np.nan
+        # row[BlockColumn.OSR.value] = (site_area - footprint) / site_area if site_area > 0 else np.nan
         row[share_living_key] = live / site_area if site_area > 0 else np.nan
         row[share_non_living_key] = row[non_living_key] / site_area if site_area > 0 else np.nan
 

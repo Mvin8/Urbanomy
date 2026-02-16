@@ -92,6 +92,7 @@ class LandPriceEstimator:
         """
 
         design_matrix = self._design_matrix(self._blocks)
+        design_matrix = self._align_features_to_model(design_matrix)
         y_log = self.model.predict(design_matrix)
 
         blocks_pred = self._blocks.copy()
@@ -143,6 +144,28 @@ class LandPriceEstimator:
 
         lag_features = self._compute_lag_features(blocks)
         return pd.concat([base, lag_features], axis=1)
+
+    def _align_features_to_model(self, design_matrix: pd.DataFrame) -> pd.DataFrame:
+        """Align feature order with model metadata when available."""
+        model_feature_names = getattr(self.model, "feature_names_", None)
+        if not model_feature_names:
+            return design_matrix
+
+        expected = list(model_feature_names)
+        actual = list(design_matrix.columns)
+
+        missing = [name for name in expected if name not in design_matrix.columns]
+        extra = [name for name in actual if name not in model_feature_names]
+        if missing or extra:
+            details = []
+            if missing:
+                details.append("missing in design matrix: " + ", ".join(missing[:10]))
+            if extra:
+                details.append("not used by model: " + ", ".join(extra[:10]))
+            raise ValueError(
+                "Feature mismatch between model and estimator input (" + "; ".join(details) + ")"
+            )
+        return design_matrix.loc[:, expected]
     
     @staticmethod
     def _categorical_token(value: Any) -> str:
@@ -218,6 +241,15 @@ class LandPriceEstimator:
         ValueError
             If any of ``orig_features`` are missing from ``self._blocks``.
         """
+        missing_categorical = [
+            feature for feature in self._categorical_features if feature not in self._orig_features
+        ]
+        if missing_categorical:
+            raise ValueError(
+                "categorical_features must be a subset of orig_features. "
+                "Missing from orig_features: " + ", ".join(sorted(missing_categorical))
+            )
+
         missing_columns = [feature for feature in self._orig_features if feature not in self._blocks.columns]
         if missing_columns:
             raise ValueError(

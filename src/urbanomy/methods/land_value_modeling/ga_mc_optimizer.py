@@ -165,6 +165,17 @@ class DistrictProblem(Problem):
 
         return estimated['land_value'].sum()
 
+    def _mark_project_block(self, geonome: GeoDataFrame) -> GeoDataFrame:
+        """Mark the target block as project using the passed target index."""
+        marked = geonome.copy()
+        marked["is_project"] = False
+        if self.target_idx not in marked.index:
+            raise KeyError(
+                f"Cannot set is_project for target_idx={self.target_idx}: index not found."
+            )
+        marked.loc[self.target_idx, "is_project"] = True
+        return marked
+
     def evaluate_investment_potential(
         self,
         geonome: GeoDataFrame,
@@ -172,25 +183,20 @@ class DistrictProblem(Problem):
         potential_df: pd.DataFrame,
         discount_rate: float = 0.18,
     ):
-        
-        geonome["is_project"] = False
-        if self.target_idx in geonome.index:
-            geonome.loc[self.target_idx, "is_project"] = True
-        elif "id" in geonome.columns:
-            geonome.loc[geonome["id"] == self.target_idx, "is_project"] = True
-        else:
-            raise KeyError(
-                f"Cannot set is_project for target_idx={self.target_idx}: index and 'id' column mismatch."
-            )
+        geonome_marked = self._mark_project_block(geonome)
         investment_input = prepare_investment_input(
-            gdf = geonome,
+            gdf = geonome_marked,
             project_potential = potential_df,
+            show_warning = False,
         )
 
         an = InvestmentAttractivenessAnalyzer(benchmarks=benchmarks)
-        summary = an.calculate_investment_metrics(investment_input, discount_rate=discount_rate)
-        
-        return summary['NPV'].astype(float).iloc[0]    
+        summary = an.calculate_investment_metrics(investment_input, discount_rate=discount_rate, show_project_totals=False, show_warning=False)
+
+        npv_series = pd.to_numeric(summary["NPV"], errors="coerce").dropna()
+        if npv_series.empty:
+            raise ValueError("NPV is not available for the selected project block.")
+        return float(npv_series.iloc[0])
 
     def _evaluate(self, X, out, *args, **kwargs):
         n = X.shape[0]

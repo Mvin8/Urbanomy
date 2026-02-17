@@ -531,6 +531,8 @@ class InvestmentAttractivenessAnalyzer:
         self,
         gdf: gpd.GeoDataFrame | pd.DataFrame,
         discount_rate: float | None = None,
+        show_project_totals: bool = True,
+        show_warning: bool = True,
     ) -> pd.DataFrame:
         """Return a per-land-use summary of investment metrics.
 
@@ -543,6 +545,12 @@ class InvestmentAttractivenessAnalyzer:
             Discount rate to use when benchmark profiles omit one. Falls back to
             the analyzer's configured rate (and ultimately
             ``DEFAULT_DISCOUNT_RATE``) when ``None``.
+        show_project_totals : bool, optional
+            Whether to print aggregated project totals and project-level metrics.
+            Defaults to ``True``.
+        show_warning : bool, optional
+            Whether to emit warning logs (for example when rows have missing
+            ``land_use``). Defaults to ``True``.
 
         Returns
         -------
@@ -573,7 +581,7 @@ class InvestmentAttractivenessAnalyzer:
         )
         missing_land_use = land_use_series.isna() | normalized_land_use.isin({"", "none"})
         missing_count = int(missing_land_use.sum())
-        if missing_count:
+        if missing_count and show_warning:
             total = int(len(working))
             logger.warning(
                 "calculate_investment_metrics: {} из {} кварталов без land-use; "
@@ -762,21 +770,22 @@ class InvestmentAttractivenessAnalyzer:
             if col in currency_columns:
                 summary[col] = summary[col].astype(float)
 
-        print("Project totals:")
-        print(f" • Land area:          {total_area:,.2f}")
-        print(f" • Built area:         {total_built:,.2f}")
-        print(f" • Land value:         {total_land_value:,.2f}")
-        print(f" • Construction cost:  {total_construction_cost:,.2f}")
-        print(f" • Investment need:    {total_investment_need:,.2f}")
-        print(f" • Spatial potential:  {s_project:,.2f}" if np.isfinite(s_project) else " • Spatial potential:  n/a")
-        if project_metrics is not None:
-            print(f" • Project NPV:        {project_metrics.npv:,.2f}")
-            print(f" • Project IRR:        {project_metrics.irr:,.2f}")
-            print(f" • Project ROI:        {project_metrics.roi:,.2f}")
-            print(f" • Project PP (yrs):   {project_metrics.payback_years:,.2f}")
-            print(f" • Project EI:         {project_metrics.economic_index:,.2f}")
-            print(f" • Project INV score:  {inv_project:,.2f}")
-        else:
-            print(" • Project metrics:    not available (no cashflows)")
+        if show_project_totals:
+            print("Project totals:")
+            print(f" • Land area:          {total_area:,.2f}")
+            print(f" • Built area:         {total_built:,.2f}")
+            print(f" • Land value:         {total_land_value:,.2f}")
+            print(f" • Construction cost:  {total_construction_cost:,.2f}")
+            print(f" • Investment need:    {total_investment_need:,.2f}")
+            print(f" • Spatial potential:  {s_project:,.2f}" if np.isfinite(s_project) else " • Spatial potential:  n/a")
+            if project_metrics is not None:
+                print(f" • Project NPV:        {project_metrics.npv:,.2f}")
+                print(f" • Project IRR:        {project_metrics.irr:,.2f}")
+                print(f" • Project ROI:        {project_metrics.roi:,.2f}")
+                print(f" • Project PP (yrs):   {project_metrics.payback_years:,.2f}")
+                print(f" • Project EI:         {project_metrics.economic_index:,.2f}")
+                print(f" • Project INV score:  {inv_project:,.2f}")
+            else:
+                print(" • Project metrics:    not available (no cashflows)")
 
         return summary

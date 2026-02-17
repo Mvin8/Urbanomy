@@ -276,6 +276,7 @@ def _prepare_with_base(
     scenario_flag_column: str,
     land_use_prefix_pattern: str,
     spatial_potential_column: str,
+    show_warning: bool,
 ) -> gpd.GeoDataFrame:
     """Filter, normalise, and enrich scenario polygons using baseline data.
 
@@ -302,6 +303,8 @@ def _prepare_with_base(
         Regex pattern removed from land-use codes.
     spatial_potential_column : str
         Column receiving the imputed IP values.
+    show_warning : bool
+        Whether to emit warning logs during preparation.
 
     Returns
     -------
@@ -342,7 +345,7 @@ def _prepare_with_base(
     working[ip_type_column] = land_use_normalised.str.lower()
     invalid_mask = working[ip_type_column].isna() | (working[ip_type_column] == "none")
     missing_count = int(invalid_mask.sum())
-    if missing_count:
+    if missing_count and show_warning:
         total = int(len(working))
         logger.warning(
             "prepare_investment_input: у {} из {} кварталов нет land-use после нормализации; "
@@ -378,6 +381,7 @@ def prepare_investment_input(
     scenario_flag_column: str = "is_project",
     land_use_prefix_pattern: str = r"^LandUse\.",
     spatial_potential_column: str = DEFAULT_IP_VALUE,
+    show_warning: bool = True,
 ) -> pd.DataFrame:
     """Prepare scenario data for investment-metrics calculation.
 
@@ -404,6 +408,8 @@ def prepare_investment_input(
         Regex pattern removed from land-use codes (default ``r"^LandUse\."``).
     spatial_potential_column : str, optional
         Column receiving the imputed IP values (default ``DEFAULT_IP_VALUE``).
+    show_warning : bool, optional
+        Whether to emit warning logs during preparation (default ``True``).
 
     Returns
     -------
@@ -431,6 +437,7 @@ def prepare_investment_input(
             scenario_flag_column=scenario_flag_column,
             land_use_prefix_pattern=land_use_prefix_pattern,
             spatial_potential_column=spatial_potential_column,
+            show_warning=show_warning,
         )
 
     polygon_gdf["land_value"] = pd.to_numeric(
@@ -441,10 +448,11 @@ def prepare_investment_input(
             polygon_gdf["land_value_before"], errors="coerce"
         )
     else:
-        logger.warning(
-            "prepare_investment_input: колонка 'land_value_before' не найдена; "
-            "значения скопированы из 'land_value'."
-        )
+        if show_warning:
+            logger.warning(
+                "prepare_investment_input: колонка 'land_value_before' не найдена; "
+                "значения скопированы из 'land_value'."
+            )
         polygon_gdf["land_value_before"] = polygon_gdf["land_value"]
 
     prepared = INPUT_SPEC.enforce(polygon_gdf)

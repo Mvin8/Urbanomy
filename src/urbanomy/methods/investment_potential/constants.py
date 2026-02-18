@@ -143,6 +143,7 @@ SUMMARY_COLUMNS: Final[tuple[str, ...]] = (
     "land_value_before",
     "built_area",
     "land_value",
+    "demolition_cost",
     "construction_cost",
     "investment_need",
     "NPV",

@@ -40,6 +40,7 @@ DEFAULT_SCENARIO_KEEP_COLUMNS: tuple[str, ...] = (
     "special",
     "agriculture",
     "land_use",
+    "land_use_before",
     "share",
     "footprint_area",
     "build_floor_area",
@@ -140,6 +141,7 @@ class InvestmentInputSpec:
 INPUT_SPEC = InvestmentInputSpec(
     required=("land_use", "land_value"),
     optional=(
+        "land_use_before",
         "land_value_before",
         "site_area",
         "living_area",
@@ -149,6 +151,7 @@ INPUT_SPEC = InvestmentInputSpec(
         DEFAULT_IP_VALUE,
     ),
     defaults={
+        "land_use_before": "",
         "land_value_before": 0.0,
         "site_area": 0.0,
         "living_area": 0.0,

@@ -118,6 +118,7 @@ class RowComputation:
     land_area: float
     built_area: float
     land_cost_total: float
+    demolition_cost: float
     construction_cost: float
     investment_need: float
     cashflow: list[float]
@@ -396,9 +397,30 @@ class InvestmentAttractivenessAnalyzer:
         else:
             construction_cost = math.nan
 
+        # Demolition is based on existing built floor area and benchmark of the original land-use.
+        old_build_floor_area = self._to_float(row.get("build_floor_area"))
+        if not np.isfinite(old_build_floor_area) or old_build_floor_area < 0:
+            old_build_floor_area = 0.0
+        demolition_land_use_raw = row.get("land_use_before", land_use_raw)
+        demolition_land_use_enum: LandUse | None = None
+        try:
+            demolition_land_use_enum = self._coerce_land_use(demolition_land_use_raw)
+        except Exception:
+            demolition_land_use_enum = None
+        demolition_profile = (
+            self._benchmarks_enum[demolition_land_use_enum]
+            if demolition_land_use_enum in self._benchmarks_enum
+            else self._benchmarks_enum[land_use_enum]
+        )
+        cost_demolition_unit = self._to_float(demolition_profile.get("cost_demolition"))
+        if np.isfinite(cost_demolition_unit) and cost_demolition_unit >= 0:
+            demolition_cost = old_build_floor_area * cost_demolition_unit
+        else:
+            demolition_cost = 0.0
+
         finite_capex = [
             value
-            for value in (profile.land_cost_total, construction_cost)
+            for value in (profile.land_cost_total, demolition_cost, construction_cost)
             if np.isfinite(value)
         ]
         investment_need = float(sum(finite_capex)) if finite_capex else math.nan
@@ -409,6 +431,7 @@ class InvestmentAttractivenessAnalyzer:
             land_area=profile.land_area,
             built_area=profile.built_area,
             land_cost_total=profile.land_cost_total,
+            demolition_cost=demolition_cost,
             construction_cost=construction_cost,
             investment_need=investment_need,
             cashflow=list(cashflow),
@@ -621,6 +644,7 @@ class InvestmentAttractivenessAnalyzer:
             "land_area": "land_area",
             "built_area": "built_area",
             "land_value": "land_cost_total",
+            "demolition_cost": "demolition_cost",
             "construction_cost": "construction_cost",
             "investment_need": "investment_need",
         }
@@ -700,12 +724,14 @@ class InvestmentAttractivenessAnalyzer:
         land_area_series = summary["land_area"] if "land_area" in summary.columns else pd.Series(0.0, index=summary.index)
         built_area_series = summary["built_area"] if "built_area" in summary.columns else pd.Series(0.0, index=summary.index)
         land_value_series = summary["land_value"] if "land_value" in summary.columns else pd.Series(0.0, index=summary.index)
+        demolition_cost_series = summary["demolition_cost"] if "demolition_cost" in summary.columns else pd.Series(0.0, index=summary.index)
         construction_cost_series = summary["construction_cost"] if "construction_cost" in summary.columns else pd.Series(0.0, index=summary.index)
         investment_need_series = summary["investment_need"] if "investment_need" in summary.columns else pd.Series(0.0, index=summary.index)
 
         total_area = land_area_series.loc[valid_mask].sum(skipna=True)
         total_built = built_area_series.loc[valid_mask].sum(skipna=True)
         total_land_value = land_value_series.loc[valid_mask].sum(skipna=True)
+        total_demolition_cost = demolition_cost_series.loc[valid_mask].sum(skipna=True)
         total_construction_cost = construction_cost_series.loc[valid_mask].sum(skipna=True)
         total_investment_need = investment_need_series.loc[valid_mask].sum(skipna=True)
 
@@ -763,7 +789,7 @@ class InvestmentAttractivenessAnalyzer:
 
         inv_project = ws_mean * s_norm_project + we_mean * e_norm_project
 
-        currency_columns = {"land_value_before", "land_value", "construction_cost", "investment_need", "NPV"}
+        currency_columns = {"land_value_before", "land_value", "demolition_cost", "construction_cost", "investment_need", "NPV"}
         numeric_cols = summary.select_dtypes(include=[np.number]).columns
         for col in numeric_cols:
             summary[col] = self._round_clean(summary[col], decimals=2)
@@ -775,6 +801,7 @@ class InvestmentAttractivenessAnalyzer:
             print(f" • Land area:          {total_area:,.2f}")
             print(f" • Built area:         {total_built:,.2f}")
             print(f" • Land value:         {total_land_value:,.2f}")
+            print(f" • Demolition cost:    {total_demolition_cost:,.2f}")
             print(f" • Construction cost:  {total_construction_cost:,.2f}")
             print(f" • Investment need:    {total_investment_need:,.2f}")
             print(f" • Spatial potential:  {s_project:,.2f}" if np.isfinite(s_project) else " • Spatial potential:  n/a")

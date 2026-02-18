@@ -62,12 +62,32 @@ class DistrictProblem(Problem):
             xu=np.array([c["max"] for c in constraints.values()]),
             type_var=np.float64
         )
+
+    def _resolve_target_label(self):
+        if self.target_idx in self.blocks.index:
+            return self.target_idx
+        return self.blocks.index[self.target_idx - 1]
+
+    def _recompute_morphotype(self, genome: dict) -> Any:
+        """Recompute morphotype for the target block using updated genome values."""
+        target_label = self._resolve_target_label()
+        updated = self.blocks.copy()
+        for key, value in genome.items():
+            if key in updated.columns:
+                updated.at[target_label, key] = value
+
+        try:
+            morphotypes = get_strelka_morphotypes(updated)
+        except Exception:
+            return updated.at[target_label, "morphotype"] if "morphotype" in updated.columns else None
+
+        if "morphotype" in morphotypes.columns and target_label in morphotypes.index:
+            return morphotypes.at[target_label, "morphotype"]
+        return updated.at[target_label, "morphotype"] if "morphotype" in updated.columns else None
     
     def _repair_genome(self, genome: dict) -> dict:
-        if self.target_idx in self.blocks.index:
-            row = self.blocks.loc[self.target_idx]
-        else:
-            row = self.blocks.iloc[self.target_idx - 1]
+        target_label = self._resolve_target_label()
+        row = self.blocks.loc[target_label]
         site_area = float(row["site_area"])
         footprint_max = 0.8 * site_area
         land_use_keys = [
@@ -140,6 +160,7 @@ class DistrictProblem(Problem):
 
         genome["fsi"] = build / site_area if site_area > 0 else 0.0
         genome["gsi"] = footprint / site_area if site_area > 0 else 0.0
+        genome["morphotype"] = self._recompute_morphotype(genome)
 
         return genome
 

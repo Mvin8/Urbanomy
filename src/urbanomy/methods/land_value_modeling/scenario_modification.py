@@ -133,6 +133,15 @@ class ScenarioTEPModifier:
         for key, value in row.items():
             df.at[target_idx, key] = value
 
+        # Keep morphotype consistent with the updated block TEP.
+        try:
+            morphotypes = get_strelka_morphotypes(df)
+            if "morphotype" in morphotypes.columns and target_idx in morphotypes.index:
+                df.at[target_idx, "morphotype"] = morphotypes.at[target_idx, "morphotype"]
+        except Exception:
+            # Do not break scenario application if morphotype recomputation fails.
+            pass
+
         return df
 
     @staticmethod

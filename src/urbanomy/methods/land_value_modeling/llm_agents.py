@@ -13,7 +13,10 @@ import numpy as np
 import pandas as pd
 import copy
 import random
+import re
 from geopandas import GeoDataFrame
+from pathlib import Path
+import pdfplumber
 from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
 from matplotlib.transforms import offset_copy
@@ -203,6 +206,76 @@ def run_multiagent_loop(
 
     return genome
 
+def load_pdfs(folder):
+    pdf_texts = []
+    for file in Path(folder).glob("*.pdf"):
+        with pdfplumber.open(file) as pdf:
+            full_text = ""
+            for page in pdf.pages:
+                full_text += page.extract_text() + "\n"
+        pdf_texts.append({
+            "filename": file.name,
+            "text": full_text
+        })
+    return pdf_texts
+
+
+
+def clean_text(text: str) -> str:
+    
+    text = re.sub(r'\n(?=[а-яa-z])', ' ', text)
+    text = re.sub(r'\s+', ' ', text)
+
+    return text.strip()
+
+def chunk_text(text, chunk_size=800, overlap=200):
+    chunks = []
+    start = 0
+    while start < len(text):
+        end = start + chunk_size
+        chunks.append(text[start:end])
+        start += chunk_size - overlap
+    return chunks
+
+class PolicyRAGStore:
+    def __init__(self, embedding_model):
+        self.embedding_model = embedding_model
+        self.texts = []
+        self.embeddings = []
+        self.metadata = []
+
+    def add_documents(self, docs):
+        for doc in docs:
+            full_text = clean_text(doc["text"])
+            chunks = chunk_text(full_text)
+            for chunk in chunks:
+                emb = self.embedding_model.encode(chunk)
+
+                self.texts.append(chunk)
+                self.embeddings.append(emb)
+                self.metadata.append({
+                    "source": doc["filename"]
+                })
+
+    def search(self, query, top_k=5):
+            query_emb = self.embedding_model.encode(query)
+
+            # косинусное сходство
+            sims = [
+                (i, query_emb @ emb)
+                for i, emb in enumerate(self.embeddings)
+            ]
+
+            sims = sorted(sims, key=lambda x: x[1], reverse=True)
+
+            results = []
+            for i, _ in sims[:top_k]:
+                results.append({
+                    "text": self.texts[i],
+                    "meta": self.metadata[i]
+                })
+            return results
+        
 
 class CityRAGBuilder:
     def __init__(self, blocks):

@@ -81,6 +81,147 @@ def rmse(y_true: np.ndarray, y_pred: np.ndarray) -> float:
     return float(np.sqrt(mean_squared_error(y_true, y_pred)))
 
 
+def to_original_scale(y: np.ndarray, *, target_col: str) -> np.ndarray:
+    # Training uses log1p-based targets (log_*), metrics should be reported in rubles.
+    if target_col.startswith("log_"):
+        return np.expm1(y)
+    return y
+
+
+def wape(y_true: np.ndarray, y_pred: np.ndarray, *, eps: float = 1e-12) -> float:
+    mask = np.isfinite(y_true) & np.isfinite(y_pred)
+    if not np.any(mask):
+        return float("nan")
+    denom = float(np.sum(np.abs(y_true[mask])))
+    if denom <= eps:
+        return float("nan")
+    num = float(np.sum(np.abs(y_true[mask] - y_pred[mask])))
+    return num / denom
+
+
+def mpe(y_true: np.ndarray, y_pred: np.ndarray, *, eps: float = 1e-12) -> float:
+    mask = np.isfinite(y_true) & np.isfinite(y_pred) & (np.abs(y_true) > eps)
+    if not np.any(mask):
+        return float("nan")
+    return float(np.mean((y_true[mask] - y_pred[mask]) / y_true[mask]))
+
+
+def mape(y_true: np.ndarray, y_pred: np.ndarray, *, eps: float = 1e-12) -> float:
+    mask = np.isfinite(y_true) & np.isfinite(y_pred) & (np.abs(y_true) > eps)
+    if not np.any(mask):
+        return float("nan")
+    return float(np.mean(np.abs((y_true[mask] - y_pred[mask]) / y_true[mask])))
+
+
+def smape(y_true: np.ndarray, y_pred: np.ndarray, *, eps: float = 1e-12) -> float:
+    mask = np.isfinite(y_true) & np.isfinite(y_pred)
+    if not np.any(mask):
+        return float("nan")
+    y_t = y_true[mask]
+    y_p = y_pred[mask]
+    denom = np.abs(y_t) + np.abs(y_p)
+    valid = denom > eps
+    if not np.any(valid):
+        return float("nan")
+    return float(np.mean(2.0 * np.abs(y_t[valid] - y_p[valid]) / denom[valid]))
+
+
+def mdape(y_true: np.ndarray, y_pred: np.ndarray, *, eps: float = 1e-12) -> float:
+    mask = np.isfinite(y_true) & np.isfinite(y_pred) & (np.abs(y_true) > eps)
+    if not np.any(mask):
+        return float("nan")
+    ape = np.abs((y_true[mask] - y_pred[mask]) / y_true[mask])
+    return float(np.median(ape))
+
+
+def rmsle(y_true: np.ndarray, y_pred: np.ndarray) -> float:
+    y_t = np.clip(y_true, a_min=0.0, a_max=None)
+    y_p = np.clip(y_pred, a_min=0.0, a_max=None)
+    return float(np.sqrt(np.mean((np.log1p(y_t) - np.log1p(y_p)) ** 2)))
+
+
+def mean_error(y_true: np.ndarray, y_pred: np.ndarray) -> float:
+    # Bias in target units: >0 means overprediction, <0 means underprediction.
+    return float(np.mean(y_pred - y_true))
+
+
+def nrmse(y_true: np.ndarray, y_pred: np.ndarray, *, eps: float = 1e-12) -> float:
+    mask = np.isfinite(y_true) & np.isfinite(y_pred)
+    if not np.any(mask):
+        return float("nan")
+    y_t = y_true[mask]
+    y_p = y_pred[mask]
+    denom = float(np.max(y_t) - np.min(y_t))
+    if denom <= eps:
+        return float("nan")
+    return float(rmse(y_t, y_p) / denom)
+
+
+def mase(
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+    *,
+    y_train: np.ndarray,
+    seasonality: int = 1,
+    eps: float = 1e-12,
+) -> float:
+    mask = np.isfinite(y_true) & np.isfinite(y_pred)
+    if not np.any(mask):
+        return float("nan")
+    y_t = y_true[mask]
+    y_p = y_pred[mask]
+    y_tr = y_train[np.isfinite(y_train)]
+    if len(y_tr) <= seasonality:
+        return float("nan")
+    scale = float(np.mean(np.abs(y_tr[seasonality:] - y_tr[:-seasonality])))
+    if scale <= eps:
+        return float("nan")
+    return float(np.mean(np.abs(y_t - y_p)) / scale)
+
+
+def residuals_dataframe(
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+    *,
+    target_col: str,
+) -> pd.DataFrame:
+    y_true_eval = to_original_scale(y_true, target_col=target_col)
+    y_pred_eval = to_original_scale(y_pred, target_col=target_col)
+    residual = y_true_eval - y_pred_eval
+    return pd.DataFrame({"y_true": y_true_eval, "y_pred": y_pred_eval, "residual": residual})
+
+
+def plot_residual_diagnostics(
+    residuals_df: pd.DataFrame,
+    *,
+    bins: int = 50,
+    figsize: Tuple[int, int] = (14, 5),
+):
+    import matplotlib.pyplot as plt
+
+    fig, axes = plt.subplots(1, 2, figsize=figsize)
+
+    axes[0].hist(residuals_df["residual"].to_numpy(), bins=bins, alpha=0.9, edgecolor="white")
+    axes[0].axvline(0.0, color="black", linestyle="--", linewidth=1)
+    axes[0].set_title("Residuals Distribution")
+    axes[0].set_xlabel("Residual (y_true - y_pred)")
+    axes[0].set_ylabel("Count")
+
+    axes[1].scatter(
+        residuals_df["y_pred"].to_numpy(),
+        residuals_df["residual"].to_numpy(),
+        s=12,
+        alpha=0.35,
+    )
+    axes[1].axhline(0.0, color="black", linestyle="--", linewidth=1)
+    axes[1].set_title("Residuals vs Predicted")
+    axes[1].set_xlabel("Predicted")
+    axes[1].set_ylabel("Residual (y_true - y_pred)")
+
+    fig.tight_layout()
+    return fig, axes
+
+
 def spatial_groups(blocks: pd.DataFrame, n_clusters: int, *, random_state: int = 42) -> np.ndarray:
     if {"x", "y"}.issubset(blocks.columns):
         coords = blocks[["x", "y"]].to_numpy()
@@ -92,6 +233,8 @@ def spatial_groups(blocks: pd.DataFrame, n_clusters: int, *, random_state: int =
 
 def prep_cat_inplace(df: pd.DataFrame, cat_cols: Sequence[str]) -> None:
     for c in cat_cols:
+        if c not in df.columns:
+            continue
         df[c] = df[c].astype("string").fillna("missing")
 
 
@@ -114,6 +257,8 @@ def add_lags_full_df(
     new_cols: Dict[str, Any] = {}
 
     for feat in numeric_cols:
+        if feat not in out.columns:
+            continue
         vec = out[feat]
         if vec.isna().any():
             vec = vec.fillna(vec.mean())
@@ -135,7 +280,40 @@ def add_lags_full_df(
 def feature_names(df: pd.DataFrame, base_cols: Sequence[str], target_col: str) -> List[str]:
     extra = [c for c in df.columns if c.startswith("lag") or c.startswith("n_neighbors_")]
     final = list(dict.fromkeys(list(base_cols) + extra))
-    return [c for c in final if c != target_col]
+    return [c for c in final if c != target_col and c in df.columns]
+
+
+def build_lagged_fold_frames(
+    df_train_base: pd.DataFrame,
+    df_test_base: pd.DataFrame,
+    *,
+    feature_cols: Sequence[str],
+    cat_features: Sequence[str],
+    numeric_feats: Sequence[str],
+    radius_list: Sequence[int],
+    target_col: str,
+) -> Tuple[pd.DataFrame, pd.DataFrame, List[str]]:
+    # Leakage-safe setup: train/test lags are computed independently per fold.
+    tr_df = df_train_base.copy()
+    te_df = df_test_base.copy()
+
+    prep_cat_inplace(tr_df, cat_features)
+    prep_cat_inplace(te_df, cat_features)
+
+    tr_weights = build_radii_weights(tr_df, radius_list)
+    te_weights = build_radii_weights(te_df, radius_list)
+
+    tr_lag = add_lags_full_df(tr_df, weights=tr_weights, numeric_cols=numeric_feats)
+    te_lag = add_lags_full_df(te_df, weights=te_weights, numeric_cols=numeric_feats)
+
+    base_cols_for_model = list(dict.fromkeys(list(feature_cols) + list(cat_features)))
+    tr_feats = feature_names(tr_lag, base_cols_for_model, target_col)
+    te_feats = feature_names(te_lag, base_cols_for_model, target_col)
+    feats = [c for c in tr_feats if c in te_feats]
+    if not feats:
+        raise RuntimeError("No common feature columns between train and test fold after lag generation.")
+
+    return tr_lag, te_lag, feats
 
 
 def pools_from_frames(
@@ -147,8 +325,9 @@ def pools_from_frames(
     cat_cols: Sequence[str],
     feats: Sequence[str],
 ) -> Tuple[Pool, Pool]:
-    tr_pool = Pool(X_tr[feats], label=y_tr, cat_features=cat_cols, feature_names=feats)
-    va_pool = Pool(X_va[feats], label=y_va, cat_features=cat_cols, feature_names=feats)
+    cat_cols_used = [c for c in cat_cols if c in feats]
+    tr_pool = Pool(X_tr[feats], label=y_tr, cat_features=cat_cols_used, feature_names=feats)
+    va_pool = Pool(X_va[feats], label=y_va, cat_features=cat_cols_used, feature_names=feats)
     return tr_pool, va_pool
 
 
@@ -163,11 +342,13 @@ def default_param_grid() -> MutableMapping[str, Sequence[Any]]:
 
 
 def run_hpo_precomputed(
-    df_train_lag: pd.DataFrame,
+    df_train_base: pd.DataFrame,
     *,
     target_col: str,
-    feats: Sequence[str],
+    feature_cols: Sequence[str],
     cat_features: Sequence[str],
+    radius_list: Sequence[int],
+    numeric_feats: Sequence[str],
     groups_train: np.ndarray,
     params_grid: Mapping[str, Sequence[Any]],
     n_iter: int,
@@ -182,65 +363,86 @@ def run_hpo_precomputed(
     gkf_inner = GroupKFold(n_splits=inner_splits)
 
     best_params: Dict[str, Any] | None = None
-    best_cv = float("inf")
+    best_cv_wape = float("inf")
+
+    inner_splits_iter = list(gkf_inner.split(df_train_base, df_train_base[target_col], groups_train))
+    precomputed_folds: List[Tuple[pd.DataFrame, pd.DataFrame, List[str]]] = []
+    for tr_idx, va_idx in inner_splits_iter:
+        tr_base = df_train_base.iloc[tr_idx]
+        va_base = df_train_base.iloc[va_idx]
+        tr_lag, va_lag, fold_feats = build_lagged_fold_frames(
+            tr_base,
+            va_base,
+            feature_cols=feature_cols,
+            cat_features=cat_features,
+            numeric_feats=numeric_feats,
+            radius_list=radius_list,
+            target_col=target_col,
+        )
+        precomputed_folds.append((tr_lag, va_lag, fold_feats))
 
     logger.info("Starting HPO across %d trials", len(sampler))
 
     for params in tqdm(sampler, desc="Trials", leave=False):
-        fold_rmses: List[float] = []
+        fold_wapes: List[float] = []
 
-        inner_splits_iter = list(gkf_inner.split(df_train_lag, df_train_lag[target_col], groups_train))
-        for k, (tr_idx, va_idx) in enumerate(
-            tqdm(inner_splits_iter, desc="InnerCV", leave=False, total=len(inner_splits_iter)),
+        for k, (tr_df, va_df, fold_feats) in enumerate(
+            tqdm(precomputed_folds, desc="InnerCV", leave=False, total=len(precomputed_folds)),
             1,
         ):
-            tr_df = df_train_lag.iloc[tr_idx]
-            va_df = df_train_lag.iloc[va_idx]
-
             tr_pool, va_pool = pools_from_frames(
                 tr_df, tr_df[target_col], va_df, va_df[target_col],
-                cat_cols=cat_features, feats=feats
+                cat_cols=cat_features, feats=fold_feats
             )
 
             model = CatBoostRegressor(
-                loss_function="RMSE",
-                eval_metric="RMSE",
+                loss_function="MAE",
+                eval_metric="MAE",
                 iterations=iterations,
                 od_type="Iter",
                 od_wait=od_wait,
                 bootstrap_type="Bayesian",
                 grow_policy="SymmetricTree",
                 random_seed=seed,
-                logging_level="Silent",
                 verbose=0,  # inner лучше без спама
                 **params,
             )
             model.fit(tr_pool, eval_set=va_pool, early_stopping_rounds=od_wait, use_best_model=True)
 
-            pred = model.predict(va_df[feats])
-            fold_rmses.append(rmse(va_df[target_col].values, pred))
-            logger.debug("trial %s fold=%d rmse=%.4f best_iter=%s", params, k, fold_rmses[-1], model.get_best_iteration())
+            pred = model.predict(va_df[fold_feats])
+            y_true_eval = to_original_scale(va_df[target_col].to_numpy(), target_col=target_col)
+            y_pred_eval = to_original_scale(np.asarray(pred), target_col=target_col)
+            fold_wapes.append(wape(y_true_eval, y_pred_eval))
+            logger.debug(
+                "trial %s fold=%d wape=%.4f best_iter=%s",
+                params,
+                k,
+                fold_wapes[-1],
+                model.get_best_iteration(),
+            )
 
-        cv_rmse = float(np.mean(fold_rmses))
-        logger.info("trial params=%s CV_RMSE=%.4f", params, cv_rmse)
+        cv_wape = float(np.mean(fold_wapes))
+        logger.info("trial params=%s CV_WAPE=%.4f", params, cv_wape)
 
-        if cv_rmse < best_cv:
-            best_cv = cv_rmse
+        if cv_wape < best_cv_wape:
+            best_cv_wape = cv_wape
             best_params = dict(params)
-            logger.info("new best params=%s CV_RMSE=%.4f", best_params, best_cv)
+            logger.info("new best params=%s CV_WAPE=%.4f", best_params, best_cv_wape)
 
     if best_params is None:
         raise RuntimeError("HPO did not evaluate any parameter sets.")
-    return best_params, best_cv
+    return best_params, best_cv_wape
 
 
 def fit_and_eval(
-    df_train_lag: pd.DataFrame,
-    df_test_lag: pd.DataFrame,
+    df_train_base: pd.DataFrame,
+    df_test_base: pd.DataFrame,
     *,
     target_col: str,
-    feats: Sequence[str],
+    feature_cols: Sequence[str],
     cat_features: Sequence[str],
+    radius_list: Sequence[int],
+    numeric_feats: Sequence[str],
     params: Mapping[str, Any],
     iterations: int,
     od_wait: int,
@@ -248,19 +450,29 @@ def fit_and_eval(
     catboost_verbose: int,
     logger: logging.Logger,
 ) -> Tuple[CatBoostRegressor, Dict[str, float], int]:
-    train_pool = Pool(df_train_lag[feats], label=df_train_lag[target_col], cat_features=cat_features, feature_names=feats)
-    test_pool = Pool(df_test_lag[feats], label=df_test_lag[target_col], cat_features=cat_features, feature_names=feats)
+    df_train_lag, df_test_lag, feats = build_lagged_fold_frames(
+        df_train_base,
+        df_test_base,
+        feature_cols=feature_cols,
+        cat_features=cat_features,
+        numeric_feats=numeric_feats,
+        radius_list=radius_list,
+        target_col=target_col,
+    )
+    cat_cols_used = [c for c in cat_features if c in feats]
+
+    train_pool = Pool(df_train_lag[feats], label=df_train_lag[target_col], cat_features=cat_cols_used, feature_names=feats)
+    test_pool = Pool(df_test_lag[feats], label=df_test_lag[target_col], cat_features=cat_cols_used, feature_names=feats)
 
     model = CatBoostRegressor(
-        loss_function="RMSE",
-        eval_metric="RMSE",
+        loss_function="MAE",
+        eval_metric="MAE",
         iterations=iterations,
         od_type="Iter",
         od_wait=od_wait,
         bootstrap_type="Bayesian",
         grow_policy="SymmetricTree",
         random_seed=seed,
-        logging_level="Silent",
         verbose=0,  # outer folds тоже лучше без спама
         **params,
     )
@@ -268,18 +480,43 @@ def fit_and_eval(
 
     y_true = df_test_lag[target_col].to_numpy()
     y_pred = model.predict(df_test_lag[feats])
+    y_train = df_train_lag[target_col].to_numpy()
+    y_true_eval = to_original_scale(y_true, target_col=target_col)
+    y_pred_eval = to_original_scale(y_pred, target_col=target_col)
+    y_train_eval = to_original_scale(y_train, target_col=target_col)
 
     m: Dict[str, float] = {
-        "r2": float(r2_score(y_true, y_pred)),
-        "mae": float(mean_absolute_error(y_true, y_pred)),
-        "rmse": float(rmse(y_true, y_pred)),
+        "r2": float(r2_score(y_true_eval, y_pred_eval)),
+        "mae": float(mean_absolute_error(y_true_eval, y_pred_eval)),
+        "rmse": float(rmse(y_true_eval, y_pred_eval)),
+        "nrmse": float(nrmse(y_true_eval, y_pred_eval)),
+        "mean_error": float(mean_error(y_true_eval, y_pred_eval)),
+        "mpe": float(mpe(y_true_eval, y_pred_eval)),
+        "mape": float(mape(y_true_eval, y_pred_eval)),
+        "wape": float(wape(y_true_eval, y_pred_eval)),
+        "mase": float(mase(y_true_eval, y_pred_eval, y_train=y_train_eval)),
+        "smape": float(smape(y_true_eval, y_pred_eval)),
+        "mdape": float(mdape(y_true_eval, y_pred_eval)),
     }
+    if target_col.startswith("log_"):
+        m["rmsle"] = float(rmsle(y_true_eval, y_pred_eval))
 
     best_it = model.get_best_iteration()
     if best_it is None or best_it <= 0:
         best_it = model.tree_count_
 
-    logger.info("Fold metrics: R2=%.4f MAE=%.4f RMSE=%.4f best_iter=%d", m["r2"], m["mae"], m["rmse"], int(best_it))
+    logger.info(
+        "Fold metrics: R2=%.4f MAE=%.4f RMSE=%.4f ME=%.4f WAPE=%.2f%% sMAPE=%.2f%% MdAPE=%.2f%%%s best_iter=%d",
+        m["r2"],
+        m["mae"],
+        m["rmse"],
+        m["mean_error"],
+        m["wape"] * 100.0,
+        m["smape"] * 100.0,
+        m["mdape"] * 100.0,
+        f" RMSLE={m['rmsle']:.4f}" if "rmsle" in m else "",
+        int(best_it),
+    )
     return model, m, int(best_it)
 
 
@@ -291,47 +528,41 @@ def run_training(
     console_level: int = logging.INFO,
 ) -> Tuple[CatBoostRegressor, Dict[str, float]]:
     logger = setup_logger(log_path, console_level=console_level)
-    logger.info("Starting training pipeline (no Moran, full outer CV, precomputed lags)")
+    logger.info("Starting training pipeline (leakage-safe fold lags, full outer CV)")
 
     target_col = config.target_col
     cat_features = list(config.cat_features)
-    numeric_feats = [c for c in config.feature_cols if c not in cat_features and c != target_col]
+    numeric_feats = [c for c in config.feature_cols if c not in cat_features and c != target_col and c in blocks.columns]
 
     base_df = blocks.copy()
-    prep_cat_inplace(base_df, cat_features)
 
-    logger.info("Building weights & lags on full dataset")
-    weights = build_radii_weights(base_df, config.radius_list)
-    blocks_lag = add_lags_full_df(base_df, weights=weights, numeric_cols=numeric_feats)
-
-    base_cols_for_model = list(dict.fromkeys(list(config.feature_cols) + cat_features))
-    feats = feature_names(blocks_lag, base_cols_for_model, target_col)
-
-    groups_all = spatial_groups(blocks_lag, config.n_clusters, random_state=config.seed)
+    groups_all = spatial_groups(base_df, config.n_clusters, random_state=config.seed)
     gkf_outer = GroupKFold(n_splits=config.outer_splits)
 
     params_grid = config.param_grid or default_param_grid()
 
     fold_metrics: List[Dict[str, float]] = []
     best_params: Dict[str, Any] | None = None
-    best_cv_rmse: float | None = None
+    best_cv_wape: float | None = None
     best_iters: List[int] = []
 
-    splits = list(gkf_outer.split(blocks_lag, blocks_lag[target_col], groups_all))
+    splits = list(gkf_outer.split(base_df, base_df[target_col], groups_all))
     logger.info("Outer CV folds: %d", len(splits))
 
     for fold_i, (train_idx, test_idx) in enumerate(tqdm(splits, desc="OuterCV", total=len(splits)), 1):
-        df_train = blocks_lag.iloc[train_idx]
-        df_test = blocks_lag.iloc[test_idx]
+        df_train = base_df.iloc[train_idx]
+        df_test = base_df.iloc[test_idx]
         groups_train = groups_all[train_idx]
 
         if best_params is None or not config.hpo_on_first_outer_only:
             logger.info("Running HPO for outer fold %d", fold_i)
-            best_params, best_cv_rmse = run_hpo_precomputed(
+            best_params, best_cv_wape = run_hpo_precomputed(
                 df_train,
                 target_col=target_col,
-                feats=feats,
+                feature_cols=config.feature_cols,
                 cat_features=cat_features,
+                radius_list=config.radius_list,
+                numeric_feats=numeric_feats,
                 groups_train=groups_train,
                 params_grid=params_grid,
                 n_iter=config.hpo_iter,
@@ -342,13 +573,15 @@ def run_training(
                 catboost_verbose=config.catboost_verbose,
                 logger=logger,
             )
-            logger.info("Best params (fold %d)=%s CV_RMSE=%.4f", fold_i, best_params, float(best_cv_rmse))
+            logger.info("Best params (fold %d)=%s CV_WAPE=%.4f", fold_i, best_params, float(best_cv_wape))
 
         model, m, best_it = fit_and_eval(
             df_train, df_test,
             target_col=target_col,
-            feats=feats,
+            feature_cols=config.feature_cols,
             cat_features=cat_features,
+            radius_list=config.radius_list,
+            numeric_feats=numeric_feats,
             params=best_params,
             iterations=max(config.iterations * 2, 4000),
             od_wait=config.od_wait,
@@ -383,16 +616,23 @@ def run_training(
 
     logger.info("Training final model on FULL dataset: iterations=%d params=%s", final_iterations, best_params)
 
-    full_pool = Pool(blocks_lag[feats], label=blocks_lag[target_col], cat_features=cat_features, feature_names=feats)
+    full_df = base_df.copy()
+    prep_cat_inplace(full_df, cat_features)
+    weights = build_radii_weights(full_df, config.radius_list)
+    blocks_lag = add_lags_full_df(full_df, weights=weights, numeric_cols=numeric_feats)
+    base_cols_for_model = list(dict.fromkeys(list(config.feature_cols) + cat_features))
+    feats = feature_names(blocks_lag, base_cols_for_model, target_col)
+    cat_cols_used = [c for c in cat_features if c in feats]
+
+    full_pool = Pool(blocks_lag[feats], label=blocks_lag[target_col], cat_features=cat_cols_used, feature_names=feats)
 
     final_model = CatBoostRegressor(
-        loss_function="RMSE",
-        eval_metric="RMSE",
+        loss_function="MAE",
+        eval_metric="MAE",
         iterations=final_iterations,
         bootstrap_type="Bayesian",
         grow_policy="SymmetricTree",
         random_seed=config.seed,
-        logging_level="Silent",
         verbose=config.catboost_verbose,  # вот тут будет прогресс по итерациям
         **best_params,
     )
@@ -410,4 +650,7 @@ __all__ = [
     "add_lags_full_df",
     "feature_names",
     "spatial_groups",
+    "mean_error",
+    "residuals_dataframe",
+    "plot_residual_diagnostics",
 ]

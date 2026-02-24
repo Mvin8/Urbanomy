@@ -103,7 +103,8 @@ def mpe(y_true: np.ndarray, y_pred: np.ndarray, *, eps: float = 1e-12) -> float:
     mask = np.isfinite(y_true) & np.isfinite(y_pred) & (np.abs(y_true) > eps)
     if not np.any(mask):
         return float("nan")
-    return float(np.mean((y_true[mask] - y_pred[mask]) / y_true[mask]))
+    # Positive means overprediction, consistent with `mean_error`.
+    return float(np.mean((y_pred[mask] - y_true[mask]) / y_true[mask]))
 
 
 def mape(y_true: np.ndarray, y_pred: np.ndarray, *, eps: float = 1e-12) -> float:
@@ -414,20 +415,20 @@ def run_hpo_precomputed(
             y_pred_eval = to_original_scale(np.asarray(pred), target_col=target_col)
             fold_wapes.append(wape(y_true_eval, y_pred_eval))
             logger.debug(
-                "trial %s fold=%d wape=%.4f best_iter=%s",
+                "trial %s fold=%d wape=%.2f%% best_iter=%s",
                 params,
                 k,
-                fold_wapes[-1],
+                fold_wapes[-1] * 100.0,
                 model.get_best_iteration(),
             )
 
         cv_wape = float(np.mean(fold_wapes))
-        logger.info("trial params=%s CV_WAPE=%.4f", params, cv_wape)
+        logger.info("trial params=%s CV_WAPE=%.2f%%", params, cv_wape * 100.0)
 
         if cv_wape < best_cv_wape:
             best_cv_wape = cv_wape
             best_params = dict(params)
-            logger.info("new best params=%s CV_WAPE=%.4f", best_params, best_cv_wape)
+            logger.info("new best params=%s CV_WAPE=%.2f%%", best_params, best_cv_wape * 100.0)
 
     if best_params is None:
         raise RuntimeError("HPO did not evaluate any parameter sets.")
@@ -485,18 +486,25 @@ def fit_and_eval(
     y_pred_eval = to_original_scale(y_pred, target_col=target_col)
     y_train_eval = to_original_scale(y_train, target_col=target_col)
 
+    mpe_ratio = float(mpe(y_true_eval, y_pred_eval))
+    mape_ratio = float(mape(y_true_eval, y_pred_eval))
+    wape_ratio = float(wape(y_true_eval, y_pred_eval))
+    smape_ratio = float(smape(y_true_eval, y_pred_eval))
+    mdape_ratio = float(mdape(y_true_eval, y_pred_eval))
+
     m: Dict[str, float] = {
         "r2": float(r2_score(y_true_eval, y_pred_eval)),
         "mae": float(mean_absolute_error(y_true_eval, y_pred_eval)),
         "rmse": float(rmse(y_true_eval, y_pred_eval)),
         "nrmse": float(nrmse(y_true_eval, y_pred_eval)),
         "mean_error": float(mean_error(y_true_eval, y_pred_eval)),
-        "mpe": float(mpe(y_true_eval, y_pred_eval)),
-        "mape": float(mape(y_true_eval, y_pred_eval)),
-        "wape": float(wape(y_true_eval, y_pred_eval)),
+        # Percentage metrics are reported in percent.
+        "mpe": float(mpe_ratio * 100.0),
+        "mape": float(mape_ratio * 100.0),
+        "wape": float(wape_ratio * 100.0),
+        "smape": float(smape_ratio * 100.0),
+        "mdape": float(mdape_ratio * 100.0),
         "mase": float(mase(y_true_eval, y_pred_eval, y_train=y_train_eval)),
-        "smape": float(smape(y_true_eval, y_pred_eval)),
-        "mdape": float(mdape(y_true_eval, y_pred_eval)),
     }
     if target_col.startswith("log_"):
         m["rmsle"] = float(rmsle(y_true_eval, y_pred_eval))
@@ -506,14 +514,16 @@ def fit_and_eval(
         best_it = model.tree_count_
 
     logger.info(
-        "Fold metrics: R2=%.4f MAE=%.4f RMSE=%.4f ME=%.4f WAPE=%.2f%% sMAPE=%.2f%% MdAPE=%.2f%%%s best_iter=%d",
+        "Fold metrics: R2=%.4f MAE=%.4f RMSE=%.4f ME=%.4f MPE=%.2f%% MAPE=%.2f%% WAPE=%.2f%% sMAPE=%.2f%% MdAPE=%.2f%%%s best_iter=%d",
         m["r2"],
         m["mae"],
         m["rmse"],
         m["mean_error"],
-        m["wape"] * 100.0,
-        m["smape"] * 100.0,
-        m["mdape"] * 100.0,
+        m["mpe"],
+        m["mape"],
+        m["wape"],
+        m["smape"],
+        m["mdape"],
         f" RMSLE={m['rmsle']:.4f}" if "rmsle" in m else "",
         int(best_it),
     )
@@ -573,7 +583,7 @@ def run_training(
                 catboost_verbose=config.catboost_verbose,
                 logger=logger,
             )
-            logger.info("Best params (fold %d)=%s CV_WAPE=%.4f", fold_i, best_params, float(best_cv_wape))
+            logger.info("Best params (fold %d)=%s CV_WAPE=%.2f%%", fold_i, best_params, float(best_cv_wape) * 100.0)
 
         model, m, best_it = fit_and_eval(
             df_train, df_test,

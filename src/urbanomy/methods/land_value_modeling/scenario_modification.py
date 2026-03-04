@@ -691,6 +691,7 @@ def _print_summary(
     threshold_note = f" (|Δ₽| > {eps:g})" if eps > 0 else ""
     print(f"\nСтатистика по кварталам в контексте{threshold_note}:")
     land_use_key = BlockColumn.LAND_USE.value
+    project_mask = pd.Series(False, index=gdf.index, dtype=bool)
 
     if len(gdf):
         project_mask = pd.Series(gdf.get(project_column, False), index=gdf.index).fillna(False).astype(bool)

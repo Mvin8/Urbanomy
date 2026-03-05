@@ -149,8 +149,7 @@ SUMMARY_COLUMNS: Final[tuple[str, ...]] = (
     "NPV",
     "IRR",
     "ROI",
+    "PI",
     "PP_years",
     "EI",
-    "spatial_potential",
-    "INV",
 )

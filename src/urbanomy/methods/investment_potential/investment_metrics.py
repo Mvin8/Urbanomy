@@ -40,7 +40,6 @@ class InvestmentMetricsResult:
 
     npv: float
     irr: float
-    roi: float
     profitability_index: float
     payback_years: float
     economic_index: float
@@ -77,12 +76,6 @@ class InvestmentMetricsResult:
         irr_raw = irr(cashflow)
         irr_value = float(irr_raw) if irr_raw is not None else np.nan
 
-        roi_value = np.nan
-        if cashflow and cashflow[0] < 0:
-            denom = -cashflow[0]
-            if denom:
-                roi_value = sum(cashflow[1:]) / denom
-
         pv_inflows = 0.0
         pv_outflows = 0.0
         for period, cf in enumerate(cashflow):
@@ -105,7 +98,6 @@ class InvestmentMetricsResult:
         return cls(
             npv=npv_value,
             irr=irr_value,
-            roi=roi_value,
             profitability_index=pi_value,
             payback_years=payback_value,
             economic_index=ei_value,
@@ -611,7 +603,6 @@ class InvestmentAttractivenessAnalyzer:
         raw_to_final = {
             "ECON_NPV": "NPV",
             "ECON_IRR": "IRR",
-            "ECON_ROI": "ROI",
             "ECON_PI": "PI",
             "ECON_PP_years": "PP_years",
             "ECON_EI": "EI",
@@ -633,7 +624,6 @@ class InvestmentAttractivenessAnalyzer:
                     {raw: getattr(result.metrics, attr) for raw, attr in {
                         "ECON_NPV": "npv",
                         "ECON_IRR": "irr",
-                        "ECON_ROI": "roi",
                         "ECON_PI": "profitability_index",
                         "ECON_PP_years": "payback_years",
                         "ECON_EI": "economic_index",
@@ -663,7 +653,7 @@ class InvestmentAttractivenessAnalyzer:
 
         summary = working.reindex(columns=SUMMARY_COLUMNS).copy()
         columns_to_null = [
-            col for col in ("NPV", "IRR", "ROI", "PI", "PP_years", "EI")
+            col for col in ("NPV", "IRR", "PI", "PP_years", "EI")
             if col in summary.columns
         ]
         if columns_to_null:
@@ -711,7 +701,6 @@ class InvestmentAttractivenessAnalyzer:
             if project_metrics is not None:
                 print(f" • Project NPV:        {project_metrics.npv:,.2f}")
                 print(f" • Project IRR:        {project_metrics.irr:,.2f}")
-                print(f" • Project ROI:        {project_metrics.roi:,.2f}")
                 print(f" • Project PI:         {project_metrics.profitability_index:,.2f}")
                 print(f" • Project PP (yrs):   {project_metrics.payback_years:,.2f}")
             else:

@@ -396,6 +396,22 @@ def default_param_grid() -> MutableMapping[str, Sequence[Any]]:
     }
 
 
+def param_grid_size(params_grid: Mapping[str, Sequence[Any]]) -> int:
+    size = 1
+    for k, values in params_grid.items():
+        n_vals = len(values)
+        if n_vals <= 0:
+            raise ValueError(f"param_grid['{k}'] must contain at least one value.")
+        size *= n_vals
+    return int(size)
+
+
+def single_params_from_grid(params_grid: Mapping[str, Sequence[Any]]) -> Dict[str, Any] | None:
+    if param_grid_size(params_grid) != 1:
+        return None
+    return {k: list(v)[0] for k, v in params_grid.items()}
+
+
 def run_hpo_precomputed(
     df_train_base: pd.DataFrame,
     *,
@@ -564,6 +580,15 @@ def run_training(
 ) -> Tuple[CatBoostRegressor, Dict[str, Any]]:
     logger = setup_logger(log_path, console_level=console_level)
     logger.info("Starting training pipeline (global lag precompute before outer CV)")
+    print(
+        "[run_training] "
+        f"outer_splits={config.outer_splits}, inner_splits={config.inner_splits}, hpo_iter={config.hpo_iter}"
+    )
+    if config.outer_splits < 2:
+        raise ValueError(f"outer_splits must be >= 2, got {config.outer_splits}.")
+    if config.group_col is not None:
+        logger.info("group_col='%s' is set; n_clusters=%d will be ignored.", config.group_col, config.n_clusters)
+        print(f"[run_training] group_col='{config.group_col}' is set; n_clusters={config.n_clusters} is ignored.")
 
     target_col = config.target_col
     cat_features = list(config.cat_features)
@@ -585,9 +610,41 @@ def run_training(
     gkf_outer = GroupKFold(n_splits=config.outer_splits)
 
     params_grid = config.param_grid or default_param_grid()
+    total_candidates = param_grid_size(params_grid)
+    effective_hpo_iter = min(config.hpo_iter, total_candidates)
+    fixed_params = single_params_from_grid(params_grid)
+    skip_hpo = fixed_params is not None
+    if skip_hpo:
+        logger.info(
+            "param_grid contains a single combination; HPO is skipped and fixed params are used: %s",
+            fixed_params,
+        )
+        print(f"[run_training] HPO skipped: param_grid has one combination: {fixed_params}")
+        if config.hpo_iter != 1:
+            logger.info("hpo_iter=%d is ignored because only one params combination is available.", config.hpo_iter)
+            print(
+                f"[run_training] hpo_iter={config.hpo_iter} ignored because only one params combination is available."
+            )
+    else:
+        if config.hpo_iter < 1:
+            raise ValueError(f"hpo_iter must be >= 1 when HPO is enabled, got {config.hpo_iter}.")
+        if config.inner_splits < 2:
+            raise ValueError(f"inner_splits must be >= 2 when HPO is enabled, got {config.inner_splits}.")
+        logger.info(
+            "HPO enabled: %d/%d sampled trials, inner_splits=%d, outer_splits=%d",
+            effective_hpo_iter,
+            total_candidates,
+            config.inner_splits,
+            config.outer_splits,
+        )
+        print(
+            "[run_training] "
+            f"HPO enabled: sampled_trials={effective_hpo_iter}/{total_candidates}, "
+            f"inner_splits={config.inner_splits}, outer_splits={config.outer_splits}"
+        )
 
     fold_metrics: List[Dict[str, float]] = []
-    best_params: Dict[str, Any] | None = None
+    best_params: Dict[str, Any] | None = dict(fixed_params) if fixed_params is not None else None
     best_cv_wape: float | None = None
     best_iters: List[int] = []
 
@@ -598,15 +655,17 @@ def run_training(
         df_train = blocks_lag.iloc[train_idx]
         df_test = blocks_lag.iloc[test_idx]
         groups_train = groups_all[train_idx]
-        n_groups_train = int(pd.Series(groups_train).nunique())
-        if n_groups_train < config.inner_splits:
-            raise ValueError(
-                f"Not enough unique groups for inner CV in fold {fold_i}: "
-                f"got {n_groups_train}, need at least {config.inner_splits}."
-            )
 
-        if best_params is None or not config.hpo_on_first_outer_only:
+        run_hpo_on_fold = (best_params is None or not config.hpo_on_first_outer_only) and not skip_hpo
+        if run_hpo_on_fold:
+            n_groups_train = int(pd.Series(groups_train).nunique())
+            if n_groups_train < config.inner_splits:
+                raise ValueError(
+                    f"Not enough unique groups for inner CV in fold {fold_i}: "
+                    f"got {n_groups_train}, need at least {config.inner_splits}."
+                )
             logger.info("Running HPO for outer fold %d", fold_i)
+            print(f"[run_training] Running HPO on outer fold {fold_i}/{len(splits)}")
             best_params, best_cv_wape = run_hpo_precomputed(
                 df_train,
                 target_col=target_col,
@@ -616,7 +675,7 @@ def run_training(
                 feats=feats,
                 groups_train=groups_train,
                 params_grid=params_grid,
-                n_iter=config.hpo_iter,
+                n_iter=effective_hpo_iter,
                 iterations=config.iterations,
                 od_wait=config.od_wait,
                 seed=config.seed,
@@ -625,6 +684,10 @@ def run_training(
                 logger=logger,
             )
             logger.info("Best params (fold %d)=%s CV_WAPE=%.2f%%", fold_i, best_params, float(best_cv_wape) * 100.0)
+            print(
+                f"[run_training] Best params after fold {fold_i}: {best_params}, "
+                f"inner_cv_wape={float(best_cv_wape) * 100.0:.2f}%"
+            )
 
         model, m, best_it = fit_and_eval(
             df_train, df_test,

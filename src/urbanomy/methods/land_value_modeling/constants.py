@@ -36,7 +36,7 @@ CATEGORICAL_FEATURES: Sequence[str] = ("land_use", "morphotype")
 """Subset of features that should be interpreted as categorical."""
 
 
-RADIUS_LIST: Sequence[float] = (300, 500, 1000, 2000, 3000)
+RADIUS_LIST: Sequence[float] = (500, 1000, 2000, 3000)
 """Default distance thresholds (in metres) for spatial lag computation."""
 
 

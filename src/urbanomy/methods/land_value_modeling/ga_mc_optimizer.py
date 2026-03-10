@@ -46,7 +46,6 @@ class DistrictProblem(Problem):
         self.estimator_kwargs = estimator_kwargs
         self.constraints = constraints
         self.benchmarks = benchmarks
-        self.potential_df = potential_df
         self.target_idx = target_idx
         self.var_names = list(constraints.keys())
         # Список переменных, которые должны суммироваться в 1

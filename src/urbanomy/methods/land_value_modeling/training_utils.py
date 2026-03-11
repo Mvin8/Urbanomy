@@ -3,16 +3,14 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Mapping, MutableMapping, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
 from catboost import CatBoostRegressor, Pool
 from libpysal.weights import DistanceBand
 from libpysal.weights.spatial_lag import lag_spatial
-from sklearn.cluster import KMeans
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
-from sklearn.model_selection import GroupKFold, ParameterSampler
 from tqdm.auto import tqdm
 
 LOGGER_NAME = "land_value_training"
@@ -24,23 +22,15 @@ class TrainingConfig:
     cat_features: Sequence[str]
     radius_list: Sequence[int]
     target_col: str = "log_total_price"
+    group_col: str = "district_name"
     loss_function: str = "MAE"
     eval_metric: str = "MAE"
-    group_col: Optional[str] = None
-
-    n_clusters: int = 10
-    inner_splits: int = 5
-    outer_splits: int = 5
 
     iterations: int = 1500
     od_wait: int = 300
     seed: int = 42
 
-    hpo_iter: int = 24
-    param_grid: Optional[Mapping[str, Sequence[Any]]] = None
-
-    # ускорение: HPO только на первом outer-fold
-    hpo_on_first_outer_only: bool = True
+    params: Optional[Mapping[str, Any]] = None
 
     # как часто CatBoost печатает прогресс (итерации). 0 = тихо
     catboost_verbose: int = 200  # например 100/200
@@ -257,33 +247,10 @@ def plot_residual_diagnostics(
     return fig, axes
 
 
-def spatial_groups(blocks: pd.DataFrame, n_clusters: int, *, random_state: int = 42) -> np.ndarray:
-    if {"x", "y"}.issubset(blocks.columns):
-        coords = blocks[["x", "y"]].to_numpy()
-    else:
-        cent = blocks.geometry.centroid
-        coords = np.column_stack([cent.x.values, cent.y.values])
-    return KMeans(n_clusters=n_clusters, random_state=random_state, n_init="auto").fit_predict(coords)
-
-
-def groups_from_column(df: pd.DataFrame, group_col: str) -> np.ndarray:
+def groups_from_column(df: pd.DataFrame, group_col: str) -> pd.Series:
     if group_col not in df.columns:
         raise KeyError(f"group_col '{group_col}' not found in DataFrame.")
-    values = df[group_col].astype("string").fillna("missing_group")
-    groups, _ = pd.factorize(values, sort=True)
-    return groups
-
-
-def resolve_groups(df: pd.DataFrame, config: TrainingConfig, logger: logging.Logger) -> np.ndarray:
-    if config.group_col is not None:
-        groups = groups_from_column(df, config.group_col)
-        n_groups = int(pd.Series(groups).nunique())
-        logger.info("Using GroupKFold groups from column '%s' (%d unique groups)", config.group_col, n_groups)
-        return groups
-
-    groups = spatial_groups(df, config.n_clusters, random_state=config.seed)
-    logger.info("Using KMeans spatial groups (%d clusters)", config.n_clusters)
-    return groups
+    return df[group_col].astype("string").fillna("missing_group")
 
 
 def prep_cat_inplace(df: pd.DataFrame, cat_cols: Sequence[str]) -> None:
@@ -371,131 +338,6 @@ def build_lagged_fold_frames(
     return tr_lag, te_lag, feats
 
 
-def pools_from_frames(
-    X_tr: pd.DataFrame,
-    y_tr: pd.Series,
-    X_va: pd.DataFrame,
-    y_va: pd.Series,
-    *,
-    cat_cols: Sequence[str],
-    feats: Sequence[str],
-) -> Tuple[Pool, Pool]:
-    cat_cols_used = [c for c in cat_cols if c in feats]
-    tr_pool = Pool(X_tr[feats], label=y_tr, cat_features=cat_cols_used, feature_names=feats)
-    va_pool = Pool(X_va[feats], label=y_va, cat_features=cat_cols_used, feature_names=feats)
-    return tr_pool, va_pool
-
-
-def default_param_grid() -> MutableMapping[str, Sequence[Any]]:
-    return {
-        "depth": [5, 6, 7, 8],
-        "learning_rate": [0.02, 0.03, 0.05],
-        "l2_leaf_reg": [3, 6, 9, 12],
-        "random_strength": [0.5, 1.0, 1.5, 2.0],
-        "bagging_temperature": [0.25, 0.5, 1.0, 2.0],
-    }
-
-
-def param_grid_size(params_grid: Mapping[str, Sequence[Any]]) -> int:
-    size = 1
-    for k, values in params_grid.items():
-        n_vals = len(values)
-        if n_vals <= 0:
-            raise ValueError(f"param_grid['{k}'] must contain at least one value.")
-        size *= n_vals
-    return int(size)
-
-
-def single_params_from_grid(params_grid: Mapping[str, Sequence[Any]]) -> Dict[str, Any] | None:
-    if param_grid_size(params_grid) != 1:
-        return None
-    return {k: list(v)[0] for k, v in params_grid.items()}
-
-
-def run_hpo_precomputed(
-    df_train_base: pd.DataFrame,
-    *,
-    target_col: str,
-    loss_function: str,
-    eval_metric: str,
-    cat_features: Sequence[str],
-    feats: Sequence[str],
-    groups_train: np.ndarray,
-    params_grid: Mapping[str, Sequence[Any]],
-    n_iter: int,
-    iterations: int,
-    od_wait: int,
-    seed: int,
-    inner_splits: int,
-    catboost_verbose: int,
-    logger: logging.Logger,
-) -> Tuple[Dict[str, Any], float]:
-    sampler = list(ParameterSampler(params_grid, n_iter=n_iter, random_state=seed))
-    gkf_inner = GroupKFold(n_splits=inner_splits)
-
-    best_params: Dict[str, Any] | None = None
-    best_cv_wape = float("inf")
-
-    inner_splits_iter = list(gkf_inner.split(df_train_base, df_train_base[target_col], groups_train))
-    precomputed_folds: List[Tuple[pd.DataFrame, pd.DataFrame, List[str]]] = []
-    for tr_idx, va_idx in inner_splits_iter:
-        tr_base = df_train_base.iloc[tr_idx]
-        va_base = df_train_base.iloc[va_idx]
-        precomputed_folds.append((tr_base, va_base, list(feats)))
-
-    logger.info("Starting HPO across %d trials", len(sampler))
-
-    for params in tqdm(sampler, desc="Trials", leave=False):
-        fold_wapes: List[float] = []
-
-        for k, (tr_df, va_df, fold_feats) in enumerate(
-            tqdm(precomputed_folds, desc="InnerCV", leave=False, total=len(precomputed_folds)),
-            1,
-        ):
-            tr_pool, va_pool = pools_from_frames(
-                tr_df, tr_df[target_col], va_df, va_df[target_col],
-                cat_cols=cat_features, feats=fold_feats
-            )
-
-            model = CatBoostRegressor(
-                loss_function=loss_function,
-                eval_metric=eval_metric,
-                iterations=iterations,
-                od_type="Iter",
-                od_wait=od_wait,
-                bootstrap_type="Bayesian",
-                grow_policy="SymmetricTree",
-                random_seed=seed,
-                verbose=0,  # inner лучше без спама
-                **params,
-            )
-            model.fit(tr_pool, eval_set=va_pool, early_stopping_rounds=od_wait, use_best_model=True)
-
-            pred = model.predict(va_df[fold_feats])
-            y_true_eval = to_original_scale(va_df[target_col].to_numpy(), target_col=target_col)
-            y_pred_eval = to_original_scale(np.asarray(pred), target_col=target_col)
-            fold_wapes.append(wape(y_true_eval, y_pred_eval))
-            logger.debug(
-                "trial %s fold=%d wape=%.2f%% best_iter=%s",
-                params,
-                k,
-                fold_wapes[-1] * 100.0,
-                model.get_best_iteration(),
-            )
-
-        cv_wape = float(np.mean(fold_wapes))
-        logger.info("trial params=%s CV_WAPE=%.2f%%", params, cv_wape * 100.0)
-
-        if cv_wape < best_cv_wape:
-            best_cv_wape = cv_wape
-            best_params = dict(params)
-            logger.info("new best params=%s CV_WAPE=%.2f%%", best_params, best_cv_wape * 100.0)
-
-    if best_params is None:
-        raise RuntimeError("HPO did not evaluate any parameter sets.")
-    return best_params, best_cv_wape
-
-
 def fit_and_eval(
     df_train_base: pd.DataFrame,
     df_test_base: pd.DataFrame,
@@ -509,7 +351,6 @@ def fit_and_eval(
     iterations: int,
     od_wait: int,
     seed: int,
-    catboost_verbose: int,
     logger: logging.Logger,
 ) -> Tuple[CatBoostRegressor, Dict[str, float], int]:
     cat_cols_used = [c for c in cat_features if c in feats]
@@ -579,115 +420,54 @@ def run_training(
     console_level: int = logging.INFO,
 ) -> Tuple[CatBoostRegressor, Dict[str, Any]]:
     logger = setup_logger(log_path, console_level=console_level)
-    logger.info("Starting training pipeline (global lag precompute before outer CV)")
-    print(
-        "[run_training] "
-        f"outer_splits={config.outer_splits}, inner_splits={config.inner_splits}, hpo_iter={config.hpo_iter}"
-    )
-    if config.outer_splits < 2:
-        raise ValueError(f"outer_splits must be >= 2, got {config.outer_splits}.")
-    if config.group_col is not None:
-        logger.info("group_col='%s' is set; n_clusters=%d will be ignored.", config.group_col, config.n_clusters)
-        print(f"[run_training] group_col='{config.group_col}' is set; n_clusters={config.n_clusters} is ignored.")
+    logger.info("Starting district leave-one-group-out training")
 
     target_col = config.target_col
+    group_col = config.group_col
     cat_features = list(config.cat_features)
     numeric_feats = [c for c in config.feature_cols if c not in cat_features and c != target_col and c in blocks.columns]
+    params = dict(config.params or {})
 
-    base_df = blocks.copy()
-    prep_cat_inplace(base_df, cat_features)
-    weights = build_radii_weights(base_df, config.radius_list)
-    blocks_lag = add_lags_full_df(base_df, weights=weights, numeric_cols=numeric_feats)
-    base_cols_for_model = list(dict.fromkeys(list(config.feature_cols) + cat_features))
-    feats = feature_names(blocks_lag, base_cols_for_model, target_col)
-
-    groups_all = resolve_groups(blocks_lag, config, logger)
-    n_groups_all = int(pd.Series(groups_all).nunique())
-    if n_groups_all < config.outer_splits:
+    groups_all = groups_from_column(blocks, group_col)
+    unique_groups = groups_all.drop_duplicates().sort_values().tolist()
+    if len(unique_groups) < 2:
         raise ValueError(
-            f"Not enough unique groups for outer CV: got {n_groups_all}, need at least {config.outer_splits}."
+            f"Need at least 2 unique districts in '{group_col}' for leave-one-group-out training; "
+            f"got {len(unique_groups)}."
         )
-    gkf_outer = GroupKFold(n_splits=config.outer_splits)
-
-    params_grid = config.param_grid or default_param_grid()
-    total_candidates = param_grid_size(params_grid)
-    effective_hpo_iter = min(config.hpo_iter, total_candidates)
-    fixed_params = single_params_from_grid(params_grid)
-    skip_hpo = fixed_params is not None
-    if skip_hpo:
-        logger.info(
-            "param_grid contains a single combination; HPO is skipped and fixed params are used: %s",
-            fixed_params,
-        )
-        print(f"[run_training] HPO skipped: param_grid has one combination: {fixed_params}")
-        if config.hpo_iter != 1:
-            logger.info("hpo_iter=%d is ignored because only one params combination is available.", config.hpo_iter)
-            print(
-                f"[run_training] hpo_iter={config.hpo_iter} ignored because only one params combination is available."
-            )
-    else:
-        if config.hpo_iter < 1:
-            raise ValueError(f"hpo_iter must be >= 1 when HPO is enabled, got {config.hpo_iter}.")
-        if config.inner_splits < 2:
-            raise ValueError(f"inner_splits must be >= 2 when HPO is enabled, got {config.inner_splits}.")
-        logger.info(
-            "HPO enabled: %d/%d sampled trials, inner_splits=%d, outer_splits=%d",
-            effective_hpo_iter,
-            total_candidates,
-            config.inner_splits,
-            config.outer_splits,
-        )
-        print(
-            "[run_training] "
-            f"HPO enabled: sampled_trials={effective_hpo_iter}/{total_candidates}, "
-            f"inner_splits={config.inner_splits}, outer_splits={config.outer_splits}"
-        )
+    logger.info("Using leave-one-group-out by '%s': %d districts", group_col, len(unique_groups))
+    print(f"[run_training] leave-one-group-out by '{group_col}', folds={len(unique_groups)}")
 
     fold_metrics: List[Dict[str, float]] = []
-    best_params: Dict[str, Any] | None = dict(fixed_params) if fixed_params is not None else None
-    best_cv_wape: float | None = None
     best_iters: List[int] = []
+    fold_details: List[Dict[str, Any]] = []
 
-    splits = list(gkf_outer.split(blocks_lag, blocks_lag[target_col], groups_all))
-    logger.info("Outer CV folds: %d", len(splits))
+    for fold_i, test_group in enumerate(tqdm(unique_groups, desc="DistrictCV", total=len(unique_groups)), 1):
+        test_mask = groups_all == test_group
+        df_train_base = blocks.loc[~test_mask].copy()
+        df_test_base = blocks.loc[test_mask].copy()
 
-    for fold_i, (train_idx, test_idx) in enumerate(tqdm(splits, desc="OuterCV", total=len(splits)), 1):
-        df_train = blocks_lag.iloc[train_idx]
-        df_test = blocks_lag.iloc[test_idx]
-        groups_train = groups_all[train_idx]
+        if df_train_base.empty or df_test_base.empty:
+            raise RuntimeError(f"Empty train/test split for district '{test_group}' in fold {fold_i}.")
 
-        run_hpo_on_fold = (best_params is None or not config.hpo_on_first_outer_only) and not skip_hpo
-        if run_hpo_on_fold:
-            n_groups_train = int(pd.Series(groups_train).nunique())
-            if n_groups_train < config.inner_splits:
-                raise ValueError(
-                    f"Not enough unique groups for inner CV in fold {fold_i}: "
-                    f"got {n_groups_train}, need at least {config.inner_splits}."
-                )
-            logger.info("Running HPO for outer fold %d", fold_i)
-            print(f"[run_training] Running HPO on outer fold {fold_i}/{len(splits)}")
-            best_params, best_cv_wape = run_hpo_precomputed(
-                df_train,
-                target_col=target_col,
-                loss_function=config.loss_function,
-                eval_metric=config.eval_metric,
-                cat_features=cat_features,
-                feats=feats,
-                groups_train=groups_train,
-                params_grid=params_grid,
-                n_iter=effective_hpo_iter,
-                iterations=config.iterations,
-                od_wait=config.od_wait,
-                seed=config.seed,
-                inner_splits=config.inner_splits,
-                catboost_verbose=config.catboost_verbose,
-                logger=logger,
-            )
-            logger.info("Best params (fold %d)=%s CV_WAPE=%.2f%%", fold_i, best_params, float(best_cv_wape) * 100.0)
-            print(
-                f"[run_training] Best params after fold {fold_i}: {best_params}, "
-                f"inner_cv_wape={float(best_cv_wape) * 100.0:.2f}%"
-            )
+        df_train, df_test, feats = build_lagged_fold_frames(
+            df_train_base,
+            df_test_base,
+            feature_cols=config.feature_cols,
+            cat_features=cat_features,
+            numeric_feats=numeric_feats,
+            radius_list=config.radius_list,
+            target_col=target_col,
+        )
+        logger.info(
+            "Fold %d/%d: test_district='%s', train=%d, test=%d, feats=%d",
+            fold_i,
+            len(unique_groups),
+            test_group,
+            len(df_train),
+            len(df_test),
+            len(feats),
+        )
 
         model, m, best_it = fit_and_eval(
             df_train, df_test,
@@ -696,19 +476,24 @@ def run_training(
             eval_metric=config.eval_metric,
             cat_features=cat_features,
             feats=feats,
-            params=best_params,
-            iterations=max(config.iterations * 2, 4000),
+            params=params,
+            iterations=config.iterations,
             od_wait=config.od_wait,
             seed=config.seed,
-            catboost_verbose=config.catboost_verbose,
             logger=logger,
         )
 
         fold_metrics.append(m)
         best_iters.append(best_it)
-
-        if config.hpo_on_first_outer_only and fold_i == 1:
-            logger.info("HPO fixed after first outer-fold: params=%s", best_params)
+        fold_details.append(
+            {
+                "fold": fold_i,
+                "test_district": str(test_group),
+                "n_train": int(len(df_train)),
+                "n_test": int(len(df_test)),
+                "best_iter": int(best_it),
+            }
+        )
 
     metrics_df = pd.DataFrame(fold_metrics)
     mean_metrics = metrics_df.mean(numeric_only=True).to_dict()
@@ -718,18 +503,21 @@ def run_training(
     for k, v in mean_metrics.items():
         summary[k] = float(v)
         summary[f"{k}_std"] = float(std_metrics.get(k, np.nan))
+    summary["folds"] = fold_details
+    summary["n_folds"] = len(unique_groups)
 
-    logger.info("OuterCV mean metrics=%s", summary)
+    logger.info("DistrictCV mean metrics=%s", summary)
 
-    if best_params is None:
-        raise RuntimeError("best_params is None (unexpected)")
+    final_iterations = int(np.median(best_iters)) if best_iters else config.iterations
+    final_iterations = max(200, final_iterations)
+    logger.info("Training final model on FULL dataset: iterations=%d params=%s", final_iterations, params)
 
-    # финальное число итераций = медиана best_iter по outer-fold
-    final_iterations = int(np.median(best_iters)) if best_iters else max(config.iterations * 2, 4000)
-    final_iterations = max(200, final_iterations)  # защита от слишком малого числа
-
-    logger.info("Training final model on FULL dataset: iterations=%d params=%s", final_iterations, best_params)
-
+    base_df = blocks.copy()
+    prep_cat_inplace(base_df, cat_features)
+    weights = build_radii_weights(base_df, config.radius_list)
+    blocks_lag = add_lags_full_df(base_df, weights=weights, numeric_cols=numeric_feats)
+    base_cols_for_model = list(dict.fromkeys(list(config.feature_cols) + cat_features))
+    feats = feature_names(blocks_lag, base_cols_for_model, target_col)
     cat_cols_used = [c for c in cat_features if c in feats]
 
     full_pool = Pool(blocks_lag[feats], label=blocks_lag[target_col], cat_features=cat_cols_used, feature_names=feats)
@@ -742,7 +530,7 @@ def run_training(
         grow_policy="SymmetricTree",
         random_seed=config.seed,
         verbose=config.catboost_verbose,  # вот тут будет прогресс по итерациям
-        **best_params,
+        **params,
     )
     final_model.fit(full_pool)
 
@@ -770,11 +558,9 @@ __all__ = [
     "TrainingConfig",
     "setup_logger",
     "run_training",
-    "default_param_grid",
     "build_radii_weights",
     "add_lags_full_df",
     "feature_names",
-    "spatial_groups",
     "mean_error",
     "residuals_dataframe",
     "plot_residual_diagnostics",

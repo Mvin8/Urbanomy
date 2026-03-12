@@ -1,4 +1,4 @@
-PYTHON ?= python
+PYTHON ?= python3
 PACKAGE_NAME = urbanomy
 SOURCE_DIR = src/$(PACKAGE_NAME)
 TEST_DIR = src/tests

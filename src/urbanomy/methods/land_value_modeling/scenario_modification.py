@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, Mapping, Sequence
+from typing import Any, Dict, Mapping
 
 import geopandas as gpd
 import matplotlib.pyplot as plt
@@ -20,12 +20,9 @@ from blocksnet.enums import LandUse
 
 from .constants import (
     BlockColumn,
-    CATEGORICAL_FEATURES,
-    ORIGINAL_FEATURES,
-    RADIUS_LIST,
+    DEFAULT_SQM_PER_PERSON,
     ScenarioResultKey,
 )
-from .land_price_estimation import LandPriceEstimator
 
 
 class ScenarioTEPModifier:
@@ -96,14 +93,17 @@ class ScenarioTEPModifier:
         live = float(row.get(living_key, df.at[target_idx, living_key]))
         non = row.get(non_living_key, np.nan)
 
+        build = max(build, 0.0)
+        if living_key not in changes and ((mxi_key in changes) or (mxi_key in row)):
+            mxi = float(row.get(mxi_key, df.at[target_idx, mxi_key]))
+            mxi = float(np.clip(mxi, 0.0, 1.0))
+            live = mxi * build
+        live = float(np.clip(live, 0.0, build))
+
         if not np.isfinite(non):
-            if build_key in changes and living_key in changes:
-                non = max(build - live, 0.0)
-            elif (mxi_key in changes) or (mxi_key in row):
-                mxi = float(row.get(mxi_key, df.at[target_idx, mxi_key]))
-                non = max(mxi * build, 0.0)
-            else:
-                non = float(df.at[target_idx, non_living_key])
+            non = max(build - live, 0.0)
+        else:
+            non = max(float(non), 0.0)
 
         if (non_living_key in changes and living_key in changes) and (build_key not in changes):
             build = live + float(non)
@@ -113,13 +113,13 @@ class ScenarioTEPModifier:
         row[non_living_key] = float(non)
 
         footprint = float(row.get(footprint_key, df.at[target_idx, footprint_key]))
-        population = float(row.get(population_key, df.at[target_idx, population_key]))
+        row[population_key] = live / DEFAULT_SQM_PER_PERSON if DEFAULT_SQM_PER_PERSON > 0 else 0.0
 
         row[BlockColumn.FSI.value] = build / site_area if site_area > 0 else np.nan
         row[BlockColumn.GSI.value] = footprint / site_area if site_area > 0 else np.nan
-        row[mxi_key] = (row[non_living_key] / build) if build > 0 else 0.0
-        row[BlockColumn.L.value] = (build / population) if population > 0 else np.nan
-        row[BlockColumn.OSR.value] = (site_area - footprint) / site_area if site_area > 0 else np.nan
+        row[mxi_key] = (row[living_key] / build) if build > 0 else np.nan
+        row[BlockColumn.L.value] = (build / footprint) if footprint > 0 else np.nan
+        # row[BlockColumn.OSR.value] = (site_area - footprint) / site_area if site_area > 0 else np.nan
         row[share_living_key] = live / site_area if site_area > 0 else np.nan
         row[share_non_living_key] = row[non_living_key] / site_area if site_area > 0 else np.nan
 
@@ -128,6 +128,15 @@ class ScenarioTEPModifier:
 
         for key, value in row.items():
             df.at[target_idx, key] = value
+
+        # Keep morphotype consistent with the updated block TEP.
+        try:
+            morphotypes = get_strelka_morphotypes(df)
+            if "morphotype" in morphotypes.columns and target_idx in morphotypes.index:
+                df.at[target_idx, "morphotype"] = morphotypes.at[target_idx, "morphotype"]
+        except Exception:
+            # Do not break scenario application if morphotype recomputation fails.
+            pass
 
         return df
 
@@ -159,101 +168,76 @@ class ScenarioTEPModifier:
 
 def plot_scenario_impact(
     *,
-    blocks_before: GeoDataFrame,
-    blocks_after: GeoDataFrame,
-    model,
-    target_idx: int,
-    orig_features: Sequence[str] | None = None,
-    categorical_features: Sequence[str] | None = None,
-    radius_list: Sequence[float] | None = None,
+    blocks: GeoDataFrame,
+    target_idx: Any,
+    target_id_column: str = "id",
+    before_column: str = "land_value_before",
+    after_column: str = "land_value",
+    pct_column: str = "land_value_delta_pct",
+    delta_column: str = "d_rub",
     eps: float = 1e-9,
     buffer_radius: float = 4000.0,
     figsize: tuple[float, float] | None = None,
     show: bool = True,
     print_summary: bool = True,
 ) -> Dict[str, object]:
-    """Visualise and report price changes introduced by a scenario.
+    """Визуализировать и вывести статистику по уже рассчитанным изменениям цен.
 
-    Parameters
-    ----------
-    blocks_before : geopandas.GeoDataFrame
-        Baseline blocks prior to scenario changes.
-    blocks_after : geopandas.GeoDataFrame
-        Blocks after applying the scenario modifications.
-    model : object
-        Fitted regression model used for price prediction (log-scale output).
-    target_idx : int
-        Index of the target block that was modified.
-    orig_features : Sequence[str], optional
-        Feature list passed to the model. Defaults to
-        :data:`~urbanomy.methods.land_value_modeling.constants.ORIGINAL_FEATURES`.
-    categorical_features : Sequence[str], optional
-        Categorical feature names. Defaults to
-        :data:`~urbanomy.methods.land_value_modeling.constants.CATEGORICAL_FEATURES`.
-    radius_list : Sequence[float], optional
-        Distance thresholds for spatial lags. Defaults to
-        :data:`~urbanomy.methods.land_value_modeling.constants.RADIUS_LIST`.
-    eps : float, default=1e-9
-        Threshold to decide whether the price change is significant.
-    buffer_radius : float, default=4000.0
-        Buffer radius (in metres) around the target block used to clip the map.
-    figsize : tuple[float, float], optional
-        Figure size passed to Matplotlib ``plt.subplots``.
-    show : bool, default=True
-        Display the generated figure using Matplotlib.
-    print_summary : bool, default=True
-        Whether to print textual statistics.
-
-    Returns
-    -------
-    dict[str, object]
-        Mapping keyed by :class:`ScenarioResultKey` values with GeoDataFrames,
-        figures, and summary statistics for the scenario impact analysis.
+    Ожидается, что ``blocks`` уже содержит колонки с ценой до/после сценария.
+    Функция ничего не предсказывает — только строит карту изменений и печатает
+    сводную статистику. На карте используется процентное изменение полной цены
+    ``land_value_delta_pct``. ``target_idx`` ожидает
+    идентификатор квартала (значение в колонке ``target_id_column``).
     """
 
-    features = tuple(orig_features) if orig_features is not None else ORIGINAL_FEATURES
-    cats = tuple(categorical_features) if categorical_features is not None else CATEGORICAL_FEATURES
-    radii = tuple(radius_list) if radius_list is not None else RADIUS_LIST
+    missing = [col for col in (before_column, after_column) if col not in blocks.columns]
+    if missing:
+        raise KeyError(f"blocks is missing required columns: {', '.join(sorted(missing))}")
 
-    before_estimator = LandPriceEstimator(
-        model=model,
-        blocks=blocks_before,
-        radius_list=radii,
-        orig_features=features,
-        categorical_features=cats,
-    )
-    after_estimator = LandPriceEstimator(
-        model=model,
-        blocks=blocks_after,
-        radius_list=radii,
-        orig_features=features,
-        categorical_features=cats,
-    )
+    combined = blocks.copy()
+    combined["land_value_before"] = combined[before_column].astype(float)
+    combined["land_value_after"] = combined[after_column].astype(float)
+    combined = _ensure_valid_geoms(combined)
 
-    before_pred = before_estimator.predict()[["land_value"]]
-    after_pred = after_estimator.predict()[["land_value"]]
+    if target_id_column not in combined.columns:
+        raise KeyError(f"blocks is missing target_id_column: {target_id_column}")
+    match = combined[combined[target_id_column] == target_idx]
+    if match.empty:
+        raise KeyError(f"target_id {target_idx!r} not found in column {target_id_column!r}")
+    resolved_target_idx = match.index[0]
 
-    combined = blocks_after.copy()
-    combined["land_value_before"] = before_pred["land_value"].astype(float)
-    combined["land_value_after"] = after_pred["land_value"].astype(float)
-    combined["d_rub"] = combined["land_value_after"] - combined["land_value_before"]
-    combined["d_pct"] = (
-        (combined["land_value_after"] / combined["land_value_before"] - 1.0) * 100
-    ).replace([np.inf, -np.inf], np.nan)
+    if delta_column in combined.columns:
+        combined["d_rub"] = combined[delta_column].astype(float)
+    else:
+        combined["d_rub"] = combined["land_value_after"] - combined["land_value_before"]
 
-    buffer_gdf = _build_buffer(blocks_before, target_idx, buffer_radius)
+    if pct_column in combined.columns:
+        combined["d_pct"] = combined[pct_column].astype(float)
+    else:
+        combined["d_pct"] = (
+            (combined["land_value_after"] / combined["land_value_before"] - 1.0) * 100
+        )
+    combined["d_pct"] = combined["d_pct"].replace([np.inf, -np.inf], np.nan)
+
+    buffer_gdf = _build_buffer(combined, resolved_target_idx, buffer_radius)
+    buffer_gdf = _ensure_valid_geoms(buffer_gdf)
     clipped = gpd.clip(combined, buffer_gdf) if len(combined) else combined
 
     changed = clipped[np.abs(clipped["d_rub"].astype(float)) > eps].copy()
     unchanged = clipped[np.abs(clipped["d_rub"].astype(float)) <= eps].copy()
 
-    vmin = -20
-    vmax = 20
+    plot_column = pct_column
+    if plot_column not in combined.columns:
+        raise KeyError(f"blocks is missing plot_column: {plot_column}")
+
+    # Use a fixed symmetric percentage scale for consistent maps
+    vmin, vmax = -20.0, 20.0
 
     fig = _plot_change_map(
         changed=changed,
         unchanged=unchanged,
-        target_geometry=blocks_before.loc[target_idx, "geometry"],
+        target_geometry=combined.loc[resolved_target_idx, "geometry"],
+        plot_column=plot_column,
         vmin=vmin,
         vmax=vmax,
         figsize=figsize,
@@ -270,7 +254,7 @@ def plot_scenario_impact(
             eps=eps,
             total_summary=summary_all,
             total_count=int(len(clipped)),
-            target_idx=target_idx,
+            target_idx=resolved_target_idx,
         )
 
     return {
@@ -309,17 +293,42 @@ def _build_buffer(blocks: GeoDataFrame, target_idx: int, radius_m: float) -> Geo
     return gpd.GeoDataFrame(geometry=buf, crs=blocks.crs)
 
 
+def _ensure_valid_geoms(gdf: GeoDataFrame) -> GeoDataFrame:
+    """Fix invalid geometries to avoid GEOS TopologyException during overlays/clipping."""
+    if gdf.empty or gdf.geometry is None:
+        return gdf
+
+    geom = gdf.geometry
+    try:
+        invalid_mask = ~geom.is_valid
+    except Exception:
+        invalid_mask = pd.Series(False, index=gdf.index)
+
+    if not invalid_mask.any():
+        return gdf
+
+    fixed = geom.copy()
+    try:
+        from shapely.validation import make_valid  # type: ignore
+        fixed.loc[invalid_mask] = geom.loc[invalid_mask].apply(make_valid)
+    except Exception:
+        fixed.loc[invalid_mask] = geom.loc[invalid_mask].buffer(0)
+
+    return gdf.set_geometry(fixed)
+
+
 def _plot_change_map(
     *,
     changed: GeoDataFrame,
     unchanged: GeoDataFrame,
     target_geometry,
+    plot_column: str,
     vmin: float,
     vmax: float,
     figsize: tuple[float, float] | None,
     show: bool,
 ) -> plt.Figure:
-    """Plot percentage price changes around the target block.
+    """Plot price changes around the target block using the selected metric.
 
     Parameters
     ----------
@@ -331,6 +340,8 @@ def _plot_change_map(
         Geometry of the focus block to outline.
     vmin, vmax : float
         Color scale bounds for percentage change.
+    plot_column : str
+        Column in ``changed``/``unchanged`` to visualise (e.g., ``d_pct`` or ``d_rub``).
     figsize : tuple[float, float] | None
         Optional figure size passed to ``plt.subplots``.
     show : bool
@@ -346,6 +357,12 @@ def _plot_change_map(
     plot_changed = changed.copy()
     plot_unchanged = unchanged.copy()
     has_colorbar = False
+
+    color_label = "Изменение цены, %"
+    formatter = _fmt_pct
+    if plot_column.lower().endswith("rub") or plot_column.lower().endswith("value") or plot_column == "d_rub":
+        color_label = "Изменение цены, ₽"
+        formatter = lambda val: _fmt_rub(val, signed=True)  # noqa: E731
 
     base_crs = plot_changed.crs or plot_unchanged.crs
     target_gdf = gpd.GeoDataFrame(geometry=[target_geometry], crs=base_crs)
@@ -366,13 +383,13 @@ def _plot_change_map(
     if len(plot_changed):
         plot_changed.plot(
             ax=ax,
-            column="d_pct",
+            column=plot_column,
             cmap="coolwarm",
             vmin=vmin,
             vmax=vmax,
             legend=True,
             legend_kwds={
-                "label": "Изменение цены, %",
+                "label": color_label,
                 "orientation": "vertical",
                 "pad": 0.02,
                 "shrink": 0.7,
@@ -384,17 +401,18 @@ def _plot_change_map(
 
         if len(fig.axes) > 1:
             cbar_ax = fig.axes[-1]
-            cbar_ax.set_ylabel("Изменение цены, %", fontsize=20)
+            cbar_ax.set_ylabel(color_label, fontsize=20)
             cbar_ax.tick_params(labelsize=14)
             cbar_ax.set_position([0.92, 0.15, 0.025, 0.7])
             has_colorbar = True
 
         for _, row in plot_changed.iterrows():
             x, y = row.geometry.centroid.coords[0]
+            value_text = formatter(row.get(plot_column))
             ax.text(
                 x,
                 y,
-                f"{row['d_pct']:+.1f}%",
+                value_text,
                 ha="center",
                 va="center",
                 fontsize=9,
@@ -673,6 +691,7 @@ def _print_summary(
     threshold_note = f" (|Δ₽| > {eps:g})" if eps > 0 else ""
     print(f"\nСтатистика по кварталам в контексте{threshold_note}:")
     land_use_key = BlockColumn.LAND_USE.value
+    project_mask = pd.Series(False, index=gdf.index, dtype=bool)
 
     if len(gdf):
         project_mask = pd.Series(gdf.get(project_column, False), index=gdf.index).fillna(False).astype(bool)

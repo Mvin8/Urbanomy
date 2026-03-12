@@ -14,7 +14,6 @@ ORIGINAL_FEATURES: Sequence[str] = (
     "transport",
     "special",
     "agriculture",
-    "land_use",
     "share",
     "footprint_area",
     "build_floor_area",
@@ -26,8 +25,9 @@ ORIGINAL_FEATURES: Sequence[str] = (
     "gsi",
     "mxi",
     "l",
-    "morphotype",
     "area_accessibility",
+    "land_use",
+    "morphotype",
 )
 """Ordered list of base features used by the land price model."""
 
@@ -36,12 +36,81 @@ CATEGORICAL_FEATURES: Sequence[str] = ("land_use", "morphotype")
 """Subset of features that should be interpreted as categorical."""
 
 
-RADIUS_LIST: Sequence[float] = (300, 500, 1000, 2000, 3000)
+RADIUS_LIST: Sequence[float] = (500, 1000, 2000, 3000)
 """Default distance thresholds (in metres) for spatial lag computation."""
 
 
 DEFAULT_OUTPUT_COLUMNS: Sequence[str] = ORIGINAL_FEATURES
 """Default set of columns produced by land data preparation."""
+
+
+SERVICE_FEATURES: Sequence[str] = (
+    "count_animal_shelter",
+    "count_bakery",
+    "count_bank",
+    "count_bar",
+    "count_beach",
+    "count_brewery",
+    "count_buildings",
+    "count_bus_station",
+    "count_bus_stop",
+    "count_cafe",
+    "count_cemetery",
+    "count_cinema",
+    "count_circus",
+    "count_convenience",
+    "count_dog_park",
+    "count_fuel",
+    "count_government",
+    "count_greenhouse_complex",
+    "count_guest_house",
+    "count_hairdresser",
+    "count_hospital",
+    "count_hostel",
+    "count_hotel",
+    "count_kindergarten",
+    "count_landfill",
+    "count_lawyer",
+    "count_machine_building_plant",
+    "count_mall",
+    "count_market",
+    "count_multifunctional_center",
+    "count_museum",
+    "count_park",
+    "count_parking",
+    "count_pharmacy",
+    "count_pier",
+    "count_pitch",
+    "count_plant_nursery",
+    "count_playground",
+    "count_police",
+    "count_polyclinic",
+    "count_post",
+    "count_prison",
+    "count_recruitment",
+    "count_religion",
+    "count_reserve",
+    "count_restaurant",
+    "count_sanatorium",
+    "count_school",
+    "count_substation",
+    "count_subway_entrance",
+    "count_supermarket",
+    "count_swimming_pool",
+    "count_theatre",
+    "count_train_building",
+    "count_train_station",
+    "count_university",
+    "count_warehouse",
+    "count_wastewater_plant",
+    "count_water_works",
+    "count_woodworking_plant",
+    "count_zoo",
+    "osr",
+    "share_living",
+    "share_non_living",
+)
+"""Optional service-related features that can be appended to ``ORIGINAL_FEATURES``."""
 
 
 DEFAULT_ADJACENCY_RADIUS: int = 10

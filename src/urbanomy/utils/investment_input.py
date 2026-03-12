@@ -9,29 +9,10 @@ import geopandas as gpd
 import pandas as pd
 from loguru import logger
 
-# ``urbanomy.methods.investment_potential.constants.DEFAULT_IP_VALUE`` uses the
-# same literal value ("spatial_potential"); duplicating it here avoids an import cycle
-# when this module is imported ahead of ``investment_potential.constants``.
-DEFAULT_IP_VALUE: str = "spatial_potential"
-
-
 INVESTMENT_NUMERIC_COLUMNS: tuple[str, ...] = (
     "land_value",
     "land_value_before",
     "price_per_sotka",
-    "site_area",
-    "living_area",
-    "non_living_area",
-    "build_floor_area",
-    "share",
-    DEFAULT_IP_VALUE,
-)
-
-DEFAULT_SCENARIO_KEEP_COLUMNS: tuple[str, ...] = (
-    "land_value",
-    "land_value_before",
-    "price_per_sotka",
-    "is_project",
     "residential",
     "business",
     "recreation",
@@ -39,24 +20,14 @@ DEFAULT_SCENARIO_KEEP_COLUMNS: tuple[str, ...] = (
     "transport",
     "special",
     "agriculture",
-    "land_use",
-    "share",
-    "footprint_area",
-    "build_floor_area",
+    "site_area",
     "living_area",
     "non_living_area",
-    "population",
-    "site_area",
-    "fsi",
-    "gsi",
-    "mxi",
-    "l",
-    "morphotype",
-    "area_accessibility",
-    "geometry",
+    "build_floor_area",
+    "share",
 )
 
-DEFAULT_ALLOWED_IP_USES: tuple[str, ...] = (
+LAND_USE_SHARE_COLUMNS: tuple[str, ...] = (
     "residential",
     "business",
     "recreation",
@@ -141,21 +112,33 @@ INPUT_SPEC = InvestmentInputSpec(
     required=("land_use", "land_value"),
     optional=(
         "land_value_before",
+        "residential",
+        "business",
+        "recreation",
+        "industrial",
+        "transport",
+        "special",
+        "agriculture",
         "site_area",
         "living_area",
         "non_living_area",
         "build_floor_area",
         "share",
-        DEFAULT_IP_VALUE,
     ),
     defaults={
         "land_value_before": 0.0,
+        "residential": 0.0,
+        "business": 0.0,
+        "recreation": 0.0,
+        "industrial": 0.0,
+        "transport": 0.0,
+        "special": 0.0,
+        "agriculture": 0.0,
         "site_area": 0.0,
         "living_area": 0.0,
         "non_living_area": 0.0,
         "build_floor_area": 0.0,
         "share": 1.0,
-        DEFAULT_IP_VALUE: 0.0,
     },
 )
 
@@ -189,182 +172,28 @@ def _ensure_geodataframe(data: gpd.GeoDataFrame | pd.DataFrame) -> gpd.GeoDataFr
     raise TypeError("Expected GeoDataFrame or DataFrame input.")
 
 
-def _build_spatial_potential_lookup(
-    base_gdf: gpd.GeoDataFrame | pd.DataFrame,
-    allowed_uses: Iterable[str],
+def _convert_land_use_shares_to_area(
+    gdf: gpd.GeoDataFrame,
     *,
-    land_use_column: str,
-    land_use_prefix_pattern: str,
-    ip_type_column: str,
-    spatial_potential_column: str,
-) -> pd.DataFrame:
-    """Aggregate baseline IP values by land-use type.
+    area_column: str = "site_area",
+    land_use_columns: Sequence[str] = LAND_USE_SHARE_COLUMNS,
+) -> None:
+    """Convert land-use shares (0..1) to area values in square meters in-place.
 
-    Parameters
-    ----------
-    base_gdf : geopandas.GeoDataFrame or pandas.DataFrame
-        Reference dataset containing baseline IP values per land-use type.
-    allowed_uses : Iterable[str]
-        Iterable of land-use codes to retain when computing the lookup table.
-    land_use_column : str
-        Column containing land-use codes. Used to derive ``ip_type_column`` when
-        missing.
-    land_use_prefix_pattern : str
-        Regex pattern removed from land-use codes prior to normalisation.
-    ip_type_column : str
-        Column containing land-use type identifiers.
-    spatial_potential_column : str
-        Column holding baseline IP values.
-
-    Returns
-    -------
-    pandas.DataFrame
-        Two-column DataFrame mapping ``ip_type_column`` to averaged baseline
-        values under the alias ``spatial_potential_from_base``.
-
-    Raises
-    ------
-    ValueError
-        If required columns are absent in ``base_gdf``.
+    Each value in ``land_use_columns`` is multiplied by ``area_column`` when it
+    looks like a share (between 0 and 1 inclusive). Values outside that range
+    are treated as already being in area units and are preserved.
     """
-    working = base_gdf.copy()
+    if area_column not in gdf.columns:
+        return
 
-    if ip_type_column not in working.columns:
-        if land_use_column not in working.columns:
-            raise ValueError(
-                f"Columns '{ip_type_column}' or '{land_use_column}' are missing in base_gdf."
-            )
-        working[ip_type_column] = (
-            working[land_use_column]
-            .astype("string")
-            .str.replace(land_use_prefix_pattern, "", regex=True)
-        )
-
-    working[ip_type_column] = working[ip_type_column].astype("string").str.lower()
-    working = working.dropna(subset=[ip_type_column])
-    working = working[working[ip_type_column] != "none"]
-
-    if spatial_potential_column not in working.columns:
-        if "potential" in working.columns:
-            working[spatial_potential_column] = working["potential"]
-        else:
-            raise ValueError(
-                f"Column '{spatial_potential_column}' is missing in base_gdf."
-            )
-
-    working[spatial_potential_column] = pd.to_numeric(working[spatial_potential_column], errors="coerce")
-
-    allowed = tuple(allowed_uses)
-    if allowed:
-        working = working[working[ip_type_column].isin(allowed)]
-
-    return (
-        working.groupby(ip_type_column, as_index=False)[spatial_potential_column]
-        .mean()
-        .rename(columns={spatial_potential_column: "spatial_potential_from_base"})
-    )
-
-
-def _prepare_with_base(
-    polygon_gdf: gpd.GeoDataFrame,
-    base_gdf: gpd.GeoDataFrame | pd.DataFrame,
-    *,
-    keep_columns: Sequence[str] | None,
-    allowed_uses: Iterable[str],
-    land_use_column: str,
-    ip_type_column: str,
-    scenario_flag_column: str,
-    land_use_prefix_pattern: str,
-    spatial_potential_column: str,
-) -> gpd.GeoDataFrame:
-    """Filter, normalise, and enrich scenario polygons using baseline data.
-
-    Parameters
-    ----------
-    polygon_gdf : geopandas.GeoDataFrame
-        Scenario polygons containing at least geometry and land-use data.
-    base_gdf : geopandas.GeoDataFrame or pandas.DataFrame
-        Baseline potential dataset used to impute IP values. When provided as a
-        regular DataFrame, only tabular columns (such as ``land_use`` and
-        ``potential``) are required.
-    keep_columns : Sequence[str] or None, optional
-        Columns to retain from ``polygon_gdf`` (defaults to
-        ``DEFAULT_SCENARIO_KEEP_COLUMNS``).
-    allowed_uses : Iterable[str]
-        Land-use codes that are permitted in the resulting dataset.
-    land_use_column : str
-        Column containing land-use codes in the scenario data.
-    ip_type_column : str
-        Column name for the derived IP type.
-    scenario_flag_column : str
-        Column indicating scenario membership (used for filtering when present).
-    land_use_prefix_pattern : str
-        Regex pattern removed from land-use codes.
-    spatial_potential_column : str
-        Column receiving the imputed IP values.
-
-    Returns
-    -------
-    geopandas.GeoDataFrame
-        Filtered scenario dataset joined with baseline IP values.
-
-    Raises
-    ------
-    ValueError
-        If the land-use column is missing.
-    """
-    geometry_column = polygon_gdf.geometry.name
-    keep_columns = tuple(keep_columns or DEFAULT_SCENARIO_KEEP_COLUMNS)
-    existing_keep = [col for col in keep_columns if col in polygon_gdf.columns]
-
-    if land_use_column not in polygon_gdf.columns:
-        raise ValueError(f"Column '{land_use_column}' is missing in polygon_gdf.")
-
-    ordered_columns: list[str] = [geometry_column]
-    ordered_columns.extend(
-        col for col in existing_keep if col not in {geometry_column, land_use_column}
-    )
-    if land_use_column != geometry_column:
-        ordered_columns.insert(1, land_use_column)
-
-    working = polygon_gdf.loc[:, ordered_columns].copy()
-
-    land_use_normalised = (
-        working[land_use_column]
-        .astype("string")
-        .str.replace(land_use_prefix_pattern, "", regex=True)
-    )
-
-    if scenario_flag_column in working.columns:
-        mask = working[scenario_flag_column].fillna(False).astype(bool)
-        working = working.loc[mask].reset_index(drop=True)
-
-    working[ip_type_column] = land_use_normalised.str.lower()
-    invalid_mask = working[ip_type_column].isna() | (working[ip_type_column] == "none")
-    missing_count = int(invalid_mask.sum())
-    if missing_count:
-        total = int(len(working))
-        logger.warning(
-            "prepare_investment_input: у {} из {} кварталов нет land-use после нормализации; "
-            "они остаются в наборе и будут обработаны на следующем этапе.",
-            missing_count,
-            total,
-        )
-        working.loc[invalid_mask, ip_type_column] = pd.NA
-
-    base_lookup = _build_spatial_potential_lookup(
-        base_gdf,
-        allowed_uses=allowed_uses,
-        land_use_column=land_use_column,
-        land_use_prefix_pattern=land_use_prefix_pattern,
-        ip_type_column=ip_type_column,
-        spatial_potential_column=spatial_potential_column,
-    )
-
-    working = working.merge(base_lookup, on=ip_type_column, how="left")
-    working[spatial_potential_column] = working.pop("spatial_potential_from_base").fillna(0.0)
-
-    return working
+    site_area = pd.to_numeric(gdf[area_column], errors="coerce")
+    for col in land_use_columns:
+        if col not in gdf.columns:
+            continue
+        values = pd.to_numeric(gdf[col], errors="coerce")
+        is_share = values.ge(0.0) & values.le(1.0)
+        gdf[col] = values.where(~is_share, values * site_area)
 
 
 def prepare_investment_input(
@@ -377,7 +206,7 @@ def prepare_investment_input(
     ip_type_column: str = "ip_type",
     scenario_flag_column: str = "is_project",
     land_use_prefix_pattern: str = r"^LandUse\.",
-    spatial_potential_column: str = DEFAULT_IP_VALUE,
+    show_warning: bool = True,
 ) -> pd.DataFrame:
     """Prepare scenario data for investment-metrics calculation.
 
@@ -386,10 +215,7 @@ def prepare_investment_input(
     gdf : geopandas.GeoDataFrame
         Scenario dataset to be normalised and validated.
     project_potential : geopandas.GeoDataFrame or pandas.DataFrame or None, optional
-        Baseline potential dataset used to impute IP values. Accepts either a
-        GeoDataFrame or a regular DataFrame with columns such as ``land_use`` and
-        ``potential``. When provided, scenario polygons are filtered to
-        ``scenario_flag_column == True`` and joined with baseline IP values.
+        Deprecated and ignored. Kept only for backward compatibility.
     keep_columns : Sequence[str] or None, optional
         Columns to preserve when filtering scenario polygons.
     allowed_uses : Iterable[str] or None, optional
@@ -402,8 +228,8 @@ def prepare_investment_input(
         Column indicating scenario membership (default ``"is_project"``).
     land_use_prefix_pattern : str, optional
         Regex pattern removed from land-use codes (default ``r"^LandUse\."``).
-    spatial_potential_column : str, optional
-        Column receiving the imputed IP values (default ``DEFAULT_IP_VALUE``).
+    show_warning : bool, optional
+        Whether to emit warning logs during preparation (default ``True``).
 
     Returns
     -------
@@ -413,24 +239,18 @@ def prepare_investment_input(
     """
 
     polygon_gdf = _ensure_geodataframe(gdf)
-    if project_potential is not None:
-        if isinstance(project_potential, gpd.GeoDataFrame):
-            base_ready = project_potential
-        elif isinstance(project_potential, pd.DataFrame):
-            base_ready = project_potential
-        else:
-            raise TypeError("project_potential must be a GeoDataFrame or DataFrame.")
-
-        polygon_gdf = _prepare_with_base(
-            polygon_gdf,
-            base_ready,
-            keep_columns=keep_columns,
-            allowed_uses=tuple(allowed_uses or DEFAULT_ALLOWED_IP_USES),
-            land_use_column=land_use_column,
-            ip_type_column=ip_type_column,
-            scenario_flag_column=scenario_flag_column,
-            land_use_prefix_pattern=land_use_prefix_pattern,
-            spatial_potential_column=spatial_potential_column,
+    _ = (keep_columns, allowed_uses, ip_type_column, land_use_prefix_pattern)
+    if project_potential is not None and show_warning:
+        logger.warning(
+            "prepare_investment_input: параметр 'project_potential' больше не используется и игнорируется."
+        )
+    if scenario_flag_column in polygon_gdf.columns:
+        scenario_mask = polygon_gdf[scenario_flag_column].fillna(False).astype(bool)
+        polygon_gdf = polygon_gdf.loc[scenario_mask].reset_index(drop=True)
+    elif show_warning:
+        logger.warning(
+            "prepare_investment_input: колонка '{}' не найдена; возвращаем все кварталы.",
+            scenario_flag_column,
         )
 
     polygon_gdf["land_value"] = pd.to_numeric(
@@ -441,11 +261,18 @@ def prepare_investment_input(
             polygon_gdf["land_value_before"], errors="coerce"
         )
     else:
-        logger.warning(
-            "prepare_investment_input: колонка 'land_value_before' не найдена; "
-            "значения скопированы из 'land_value'."
-        )
+        if show_warning:
+            logger.warning(
+                "prepare_investment_input: колонка 'land_value_before' не найдена; "
+                "значения скопированы из 'land_value'."
+            )
         polygon_gdf["land_value_before"] = polygon_gdf["land_value"]
+
+    _convert_land_use_shares_to_area(
+        polygon_gdf,
+        area_column="site_area",
+        land_use_columns=LAND_USE_SHARE_COLUMNS,
+    )
 
     prepared = INPUT_SPEC.enforce(polygon_gdf)
     geometry_column = prepared.geometry.name if hasattr(prepared, "geometry") else None
@@ -456,8 +283,7 @@ def prepare_investment_input(
 
 __all__ = [
     "INVESTMENT_NUMERIC_COLUMNS",
-    "DEFAULT_SCENARIO_KEEP_COLUMNS",
-    "DEFAULT_ALLOWED_IP_USES",
+    "LAND_USE_SHARE_COLUMNS",
     "InvestmentInputSpec",
     "INPUT_SPEC",
     "prepare_investment_input",

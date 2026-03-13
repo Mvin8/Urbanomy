@@ -128,6 +128,7 @@ ACCESSIBILITY_SPEED: float = 5 * 1_000 / 60
 class BlockColumn(str, Enum):
     """Canonical column identifiers used across land value workflows."""
 
+    ID = "id"
     LAND_USE = "land_use"
     SHARE = "share"
     FOOTPRINT_AREA = "footprint_area"

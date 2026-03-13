@@ -40,13 +40,23 @@ from pymoo.core.problem import Problem
 from .land_price_estimation import LandPriceEstimator
 
 class DistrictProblem(Problem):
-    def __init__(self, blocks: GeoDataFrame, model: CatBoostRegressor, estimator_kwargs: Dict[str, Any], constraints: Dict[str, Dict[str, Any]],benchmarks: Any, potential_df: pd.DataFrame, target_idx: int):
+    def __init__(
+        self,
+        blocks: GeoDataFrame,
+        model: CatBoostRegressor,
+        estimator_kwargs: Dict[str, Any],
+        constraints: Dict[str, Dict[str, Any]],
+        benchmarks: Any,
+        target_id: Any,
+        target_id_column: str = BlockColumn.ID.value,
+    ):
         self.blocks = blocks
         self.model = model
         self.estimator_kwargs = estimator_kwargs
         self.constraints = constraints
         self.benchmarks = benchmarks
-        self.target_idx = target_idx
+        self.target_id = target_id
+        self.target_id_column = target_id_column
         self.var_names = list(constraints.keys())
         # Список переменных, которые должны суммироваться в 1
         land_use_vars = ['residential', 'business', 'recreation', 
@@ -63,9 +73,22 @@ class DistrictProblem(Problem):
         )
 
     def _resolve_target_label(self):
-        if self.target_idx in self.blocks.index:
-            return self.target_idx
-        return self.blocks.index[self.target_idx - 1]
+        if self.target_id_column not in self.blocks.columns:
+            raise KeyError(
+                f"Target id column {self.target_id_column!r} is not present in the dataset."
+            )
+
+        matches = self.blocks.index[self.blocks[self.target_id_column] == self.target_id]
+        if len(matches) == 0:
+            raise KeyError(
+                f"Block with {self.target_id_column}={self.target_id!r} is not present in the dataset."
+            )
+        if len(matches) > 1:
+            raise ValueError(
+                f"Multiple blocks found for {self.target_id_column}={self.target_id!r}; "
+                "the identifier must be unique."
+            )
+        return matches[0]
 
     def _recompute_morphotype(self, genome: dict) -> Any:
         """Recompute morphotype for the target block using updated genome values."""
@@ -189,25 +212,24 @@ class DistrictProblem(Problem):
         """Mark the target block as project using the passed target index."""
         marked = geonome.copy()
         marked["is_project"] = False
-        if self.target_idx not in marked.index:
+        target_label = self._resolve_target_label()
+        if target_label not in marked.index:
             raise KeyError(
-                f"Cannot set is_project for target_idx={self.target_idx}: index not found."
+                f"Cannot set is_project for {self.target_id_column}={self.target_id!r}: row not found."
             )
-        marked.loc[self.target_idx, "is_project"] = True
+        marked.loc[target_label, "is_project"] = True
         return marked
 
     def evaluate_investment_potential(
         self,
         geonome: GeoDataFrame,
         benchmarks: Mapping[LandUse, Dict[str, Any]],
-        potential_df: pd.DataFrame,
         discount_rate: float = 0.18,
     ):
         geonome_marked = self._mark_project_block(geonome)
         investment_input = prepare_investment_input(
-            gdf = geonome_marked,
-            project_potential = potential_df,
-            show_warning = False,
+            gdf=geonome_marked,
+            show_warning=False,
         )
 
         an = InvestmentAttractivenessAnalyzer(benchmarks=benchmarks)
@@ -228,7 +250,11 @@ class DistrictProblem(Problem):
             changes = {name: genome[j] for j, name in enumerate(self.var_names)}
             changes = self._repair_genome(changes)  # Ремонтируем геном, чтобы соблюсти сумму долей
             modifier = ScenarioTEPModifier(self.blocks)
-            blocks_after = modifier.apply(self.target_idx, changes)
+            blocks_after = modifier.apply(
+                self.target_id,
+                changes,
+                target_id_column=self.target_id_column,
+            )
 
             land_value = self.evaluate_catboost(
                 geonome=blocks_after,
@@ -241,7 +267,6 @@ class DistrictProblem(Problem):
             investment_potential = self.evaluate_investment_potential(
                 geonome=blocks_after,
                 benchmarks=self.benchmarks,
-                potential_df=self.potential_df,
                 discount_rate=0.18,
             )
 

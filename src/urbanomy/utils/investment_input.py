@@ -11,6 +11,7 @@ from loguru import logger
 
 INVESTMENT_NUMERIC_COLUMNS: tuple[str, ...] = (
     "land_value",
+    "land_value_after",
     "land_value_before",
     "price_per_sotka",
     "residential",
@@ -24,7 +25,7 @@ INVESTMENT_NUMERIC_COLUMNS: tuple[str, ...] = (
     "living_area",
     "non_living_area",
     "build_floor_area",
-    "share",
+    "build_floor_area_before",
 )
 
 LAND_USE_SHARE_COLUMNS: tuple[str, ...] = (
@@ -111,6 +112,7 @@ class InvestmentInputSpec:
 INPUT_SPEC = InvestmentInputSpec(
     required=("land_use", "land_value"),
     optional=(
+        "land_value_after",
         "land_value_before",
         "residential",
         "business",
@@ -123,10 +125,12 @@ INPUT_SPEC = InvestmentInputSpec(
         "living_area",
         "non_living_area",
         "build_floor_area",
-        "share",
+        "land_use_before",
+        "build_floor_area_before",
     ),
     defaults={
-        "land_value_before": 0.0,
+        "land_value_after": float("nan"),
+        "land_value_before": float("nan"),
         "residential": 0.0,
         "business": 0.0,
         "recreation": 0.0,
@@ -138,7 +142,8 @@ INPUT_SPEC = InvestmentInputSpec(
         "living_area": 0.0,
         "non_living_area": 0.0,
         "build_floor_area": 0.0,
-        "share": 1.0,
+        "land_use_before": "",
+        "build_floor_area_before": 0.0,
     },
 )
 
@@ -256,6 +261,16 @@ def prepare_investment_input(
     polygon_gdf["land_value"] = pd.to_numeric(
         polygon_gdf.get("land_value"), errors="coerce"
     )
+
+    if "land_value_after" in polygon_gdf.columns:
+        polygon_gdf["land_value_after"] = pd.to_numeric(
+            polygon_gdf["land_value_after"], errors="coerce"
+        )
+    else:
+        polygon_gdf["land_value_after"] = polygon_gdf["land_value"]
+
+    polygon_gdf["land_value"] = polygon_gdf["land_value_after"]
+
     if "land_value_before" in polygon_gdf.columns:
         polygon_gdf["land_value_before"] = pd.to_numeric(
             polygon_gdf["land_value_before"], errors="coerce"
@@ -264,9 +279,30 @@ def prepare_investment_input(
         if show_warning:
             logger.warning(
                 "prepare_investment_input: колонка 'land_value_before' не найдена; "
-                "значения скопированы из 'land_value'."
+                "значение оставлено пустым, текущая цена записана в 'land_value_after'."
             )
-        polygon_gdf["land_value_before"] = polygon_gdf["land_value"]
+        polygon_gdf["land_value_before"] = float("nan")
+
+    if "build_floor_area_before" in polygon_gdf.columns:
+        polygon_gdf["build_floor_area_before"] = pd.to_numeric(
+            polygon_gdf["build_floor_area_before"], errors="coerce"
+        )
+    elif "build_floor_area" in polygon_gdf.columns:
+        polygon_gdf["build_floor_area_before"] = pd.to_numeric(
+            polygon_gdf["build_floor_area"], errors="coerce"
+        )
+
+    if "build_floor_area_before" in polygon_gdf.columns and "build_floor_area" in polygon_gdf.columns:
+        polygon_gdf["build_floor_area_before"] = pd.to_numeric(
+            polygon_gdf["build_floor_area_before"], errors="coerce"
+        ).fillna(pd.to_numeric(polygon_gdf["build_floor_area"], errors="coerce"))
+
+    if "land_use_before" not in polygon_gdf.columns:
+        polygon_gdf["land_use_before"] = polygon_gdf.get(land_use_column, "")
+    elif land_use_column in polygon_gdf.columns:
+        polygon_gdf["land_use_before"] = polygon_gdf["land_use_before"].fillna(
+            polygon_gdf[land_use_column]
+        )
 
     _convert_land_use_shares_to_area(
         polygon_gdf,

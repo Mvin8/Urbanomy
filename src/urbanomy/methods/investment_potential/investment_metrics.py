@@ -251,6 +251,131 @@ class InvestmentAttractivenessAnalyzer:
             if col in gdf.columns:
                 gdf[col] = pd.to_numeric(gdf[col], errors="coerce")
 
+    def _extract_built_area_components(
+        self,
+        row: pd.Series,
+    ) -> tuple[float, float, float]:
+        """Read living/non-living areas and derive total built area.
+
+        When both explicit components are present, they take precedence over
+        ``build_floor_area`` because they provide the semantic split required
+        for mixed-use allocation. When only one component is known, the total
+        falls back to ``build_floor_area`` so the residual can be distributed
+        across the remaining land uses.
+        """
+        living = self._to_float(row.get("living_area"))
+        if not np.isfinite(living) or living <= 0:
+            living = math.nan
+
+        non_living = self._to_float(row.get("non_living_area"))
+        if not np.isfinite(non_living) or non_living <= 0:
+            non_living = math.nan
+
+        known_components = [
+            value for value in (living, non_living) if np.isfinite(value) and value > 0
+        ]
+        components_total = float(sum(known_components)) if known_components else math.nan
+
+        build_floor_area = self._to_float(row.get("build_floor_area"))
+        if not np.isfinite(build_floor_area) or build_floor_area <= 0:
+            build_floor_area = math.nan
+
+        if len(known_components) == 2:
+            total_built_area = components_total
+        elif np.isfinite(build_floor_area):
+            total_built_area = build_floor_area
+        else:
+            total_built_area = components_total
+
+        if not np.isfinite(total_built_area) or total_built_area <= 0:
+            total_built_area = math.nan
+
+        return living, non_living, total_built_area
+
+    @staticmethod
+    def _distribute_by_weights(
+        total_amount: float,
+        weights: Mapping[LandUse, float],
+    ) -> dict[LandUse, float]:
+        """Distribute a positive amount proportionally to positive weights."""
+        if not np.isfinite(total_amount) or total_amount <= 0:
+            return {}
+
+        valid_weights = {
+            key: float(value)
+            for key, value in weights.items()
+            if np.isfinite(value) and value > 0
+        }
+        total_weight = float(sum(valid_weights.values()))
+        if total_weight <= 0:
+            return {}
+
+        return {
+            key: total_amount * (value / total_weight)
+            for key, value in valid_weights.items()
+        }
+
+    def _allocate_built_area_by_zone(
+        self,
+        row: pd.Series,
+        zone_areas: Mapping[LandUse, float],
+    ) -> tuple[dict[LandUse, float], float]:
+        """Allocate built area to land uses using living/non-living semantics.
+
+        Residential zones receive ``living_area`` first. Non-residential zones
+        receive ``non_living_area`` first. Any residual from ``build_floor_area``
+        is allocated to the complementary group when possible, otherwise across
+        all zones proportionally to land-use area.
+        """
+        zone_weights = {
+            lu: float(area)
+            for lu, area in zone_areas.items()
+            if np.isfinite(area) and area > 0
+        }
+        if not zone_weights:
+            return {}, math.nan
+
+        living, non_living, total_built_area = self._extract_built_area_components(row)
+        allocations: dict[LandUse, float] = {}
+        allocated_total = 0.0
+
+        residential_zones = {
+            lu: area for lu, area in zone_weights.items() if lu == LandUse.RESIDENTIAL
+        }
+        non_residential_zones = {
+            lu: area for lu, area in zone_weights.items() if lu != LandUse.RESIDENTIAL
+        }
+
+        component_targets = (
+            (living, residential_zones),
+            (non_living, non_residential_zones),
+        )
+        for component_area, targets in component_targets:
+            distributed = self._distribute_by_weights(component_area, targets)
+            if not distributed:
+                continue
+            for zone_lu, zone_built_area in distributed.items():
+                allocations[zone_lu] = allocations.get(zone_lu, 0.0) + zone_built_area
+            allocated_total += float(sum(distributed.values()))
+
+        residual_built_area = (
+            total_built_area - allocated_total
+            if np.isfinite(total_built_area)
+            else math.nan
+        )
+        if np.isfinite(residual_built_area) and residual_built_area > 0:
+            residual_targets = zone_weights
+            if np.isfinite(living) and living > 0 and not (np.isfinite(non_living) and non_living > 0):
+                residual_targets = non_residential_zones or zone_weights
+            elif np.isfinite(non_living) and non_living > 0 and not (np.isfinite(living) and living > 0):
+                residual_targets = residential_zones or zone_weights
+
+            distributed = self._distribute_by_weights(residual_built_area, residual_targets)
+            for zone_lu, zone_built_area in distributed.items():
+                allocations[zone_lu] = allocations.get(zone_lu, 0.0) + zone_built_area
+
+        return allocations, total_built_area
+
     def _prepare_profile(self, row: pd.Series, base_profile: dict[str, Any]) -> PreparedProfile:
         """Combine a row with a benchmark profile for cash-flow modelling.
 
@@ -286,11 +411,7 @@ class InvestmentAttractivenessAnalyzer:
         if np.isfinite(land_cost_total) and land_area > 0:
             params["land_cost"] = land_cost_total / land_area
 
-        living = self._to_float(row.get("living_area"))
-        non_living = self._to_float(row.get("non_living_area"))
-        built_area = living + non_living
-        if not np.isfinite(built_area) or built_area <= 0:
-            built_area = self._to_float(row.get("build_floor_area"))
+        _, _, built_area = self._extract_built_area_components(row)
 
         if np.isfinite(built_area) and built_area > 0:
             params["built_area"] = built_area
@@ -305,10 +426,6 @@ class InvestmentAttractivenessAnalyzer:
             gross_floor_area = (
                 land_area * density if np.isfinite(density) and density > 0 else math.nan
             )
-
-        share_val = self._to_float(row.get("share"))
-        if np.isfinite(share_val) and share_val > 0:
-            params["rent_share"] = max(0.0, min(share_val, 1.0))
 
         return PreparedProfile(
             params=params,
@@ -390,23 +507,16 @@ class InvestmentAttractivenessAnalyzer:
             else math.nan
         )
 
-        living = self._to_float(row.get("living_area"))
-        non_living = self._to_float(row.get("non_living_area"))
-        total_built_area = living + non_living
-        if not np.isfinite(total_built_area) or total_built_area <= 0:
-            total_built_area = self._to_float(row.get("build_floor_area"))
-        if not np.isfinite(total_built_area) or total_built_area <= 0:
-            total_built_area = math.nan
+        zone_built_areas, total_built_area = self._allocate_built_area_by_zone(row, zone_areas)
 
-        share_val = self._to_float(row.get("share"))
-        has_rent_share = np.isfinite(share_val) and share_val > 0
-        if has_rent_share:
-            share_val = max(0.0, min(share_val, 1.0))
-
-        old_build_floor_area = self._to_float(row.get("build_floor_area"))
+        old_build_floor_area = self._to_float(
+            row.get("build_floor_area_before", row.get("build_floor_area"))
+        )
         if not np.isfinite(old_build_floor_area) or old_build_floor_area < 0:
             old_build_floor_area = 0.0
-        demolition_land_use_raw = row.get("land_use_before", land_use_raw)
+        demolition_land_use_raw = row.get("land_use_before")
+        if demolition_land_use_raw is None or str(demolition_land_use_raw).strip() == "":
+            demolition_land_use_raw = land_use_raw
         demolition_land_use_enum: LandUse | None = None
         try:
             demolition_land_use_enum = self._coerce_land_use(demolition_land_use_raw)
@@ -436,13 +546,11 @@ class InvestmentAttractivenessAnalyzer:
             zone_profile = dict(self._benchmarks_enum[zone_lu])
             if np.isfinite(land_cost_per_area) and land_cost_per_area >= 0:
                 zone_profile["land_cost"] = land_cost_per_area
-            if np.isfinite(total_built_area) and total_built_area > 0 and total_zone_area > 0:
-                zone_built_area = total_built_area * (zone_area / total_zone_area)
+            zone_built_area = zone_built_areas.get(zone_lu, math.nan)
+            if np.isfinite(zone_built_area) and zone_built_area > 0:
                 zone_profile["built_area"] = zone_built_area
                 built_area_total += zone_built_area
                 has_built_area = True
-            if has_rent_share:
-                zone_profile["rent_share"] = share_val
 
             zone_cf = make_cashflow(zone_lu.value, zone_area, zone_profile)
             zone_cashflows.append(zone_cf)
@@ -588,10 +696,15 @@ class InvestmentAttractivenessAnalyzer:
         )
         self._coerce_numeric_columns(working, INVESTMENT_NUMERIC_COLUMNS)
 
+        if "land_value_after" in working.columns:
+            working["land_value_after"] = pd.to_numeric(
+                working["land_value_after"], errors="coerce"
+            )
+            working["land_value"] = working["land_value_after"]
+        elif "land_value" not in working.columns:
+            working["land_value"] = np.nan
         if "land_value_before" not in working.columns:
-            working["land_value_before"] = working.get("land_value", np.nan)
-        if "land_value" not in working.columns:
-            working["land_value"] = working.get("land_value_before", np.nan)
+            working["land_value_before"] = np.nan
         working["land_value_before"] = pd.to_numeric(working["land_value_before"], errors="coerce")
         working["land_value"] = pd.to_numeric(working["land_value"], errors="coerce")
 

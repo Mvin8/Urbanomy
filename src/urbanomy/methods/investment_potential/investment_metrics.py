@@ -405,9 +405,7 @@ class InvestmentAttractivenessAnalyzer:
         if not np.isfinite(land_area) or land_area <= 0:
             raise ValueError(f"Polygon {row.name} has no valid land area")
 
-        land_cost_total = self._to_float(
-            row.get("land_value", row.get("land_value_before"))
-        )
+        land_cost_total = self._to_float(row.get("land_value"))
         if np.isfinite(land_cost_total) and land_area > 0:
             params["land_cost"] = land_cost_total / land_area
 
@@ -500,7 +498,7 @@ class InvestmentAttractivenessAnalyzer:
             zone_areas = {land_use_enum: profile.land_area}
         total_zone_area = float(sum(zone_areas.values()))
 
-        land_cost_total = self._to_float(row.get("land_value", row.get("land_value_before")))
+        land_cost_total = self._to_float(row.get("land_value"))
         land_cost_per_area = (
             land_cost_total / total_zone_area
             if np.isfinite(land_cost_total) and total_zone_area > 0
@@ -696,16 +694,8 @@ class InvestmentAttractivenessAnalyzer:
         )
         self._coerce_numeric_columns(working, INVESTMENT_NUMERIC_COLUMNS)
 
-        if "land_value_after" in working.columns:
-            working["land_value_after"] = pd.to_numeric(
-                working["land_value_after"], errors="coerce"
-            )
-            working["land_value"] = working["land_value_after"]
-        elif "land_value" not in working.columns:
+        if "land_value" not in working.columns:
             working["land_value"] = np.nan
-        if "land_value_before" not in working.columns:
-            working["land_value_before"] = np.nan
-        working["land_value_before"] = pd.to_numeric(working["land_value_before"], errors="coerce")
         working["land_value"] = pd.to_numeric(working["land_value"], errors="coerce")
 
         row_results = [
@@ -796,7 +786,7 @@ class InvestmentAttractivenessAnalyzer:
         total_construction_cost = construction_cost_series.loc[valid_mask].sum(skipna=True)
         total_investment_need = investment_need_series.loc[valid_mask].sum(skipna=True)
 
-        currency_columns = {"land_value_before", "land_value", "demolition_cost", "construction_cost", "investment_need", "NPV"}
+        currency_columns = {"land_value", "demolition_cost", "construction_cost", "investment_need", "NPV"}
         numeric_cols = summary.select_dtypes(include=[np.number]).columns
         for col in numeric_cols:
             summary[col] = self._round_clean(summary[col], decimals=2)

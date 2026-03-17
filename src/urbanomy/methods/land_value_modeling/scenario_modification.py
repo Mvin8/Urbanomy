@@ -92,9 +92,6 @@ class ScenarioTEPModifier:
         population_key = BlockColumn.POPULATION.value
         share_key = BlockColumn.SHARE.value
         residential_key = BlockColumn.RESIDENTIAL.value
-        share_living_key = BlockColumn.SHARE_LIVING.value
-        share_non_living_key = BlockColumn.SHARE_NON_LIVING.value
-
         site_area = float(row.get(site_area_key, df.at[resolved_index, site_area_key]))
 
         build = float(row.get(build_key, df.at[resolved_index, build_key]))
@@ -128,8 +125,6 @@ class ScenarioTEPModifier:
         row[mxi_key] = (row[living_key] / build) if build > 0 else np.nan
         row[BlockColumn.L.value] = (build / footprint) if footprint > 0 else np.nan
         # row[BlockColumn.OSR.value] = (site_area - footprint) / site_area if site_area > 0 else np.nan
-        row[share_living_key] = live / site_area if site_area > 0 else np.nan
-        row[share_non_living_key] = row[non_living_key] / site_area if site_area > 0 else np.nan
 
         if residential_key in normalised_changes and share_key not in normalised_changes:
             row[share_key] = float(row[residential_key])

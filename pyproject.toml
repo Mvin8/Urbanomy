@@ -42,6 +42,13 @@ include = ["urbanomy*"]
 
 
 [project.optional-dependencies]
+llm = [
+    "langchain-core>=0.3,<0.4",
+    "langchain-ollama>=0.2,<0.4",
+    "langchain-openai>=0.2,<0.4",
+    "langgraph>=0.2,<1.1"
+]
+
 dev = [ # зависимости, необходимые для разработки библиотеки, но не для её использования
     "black[jupyter]==22.3",     # Форматирование, включая поддержку Jupyter
     "mapclassify==2.6.1",       # Визуализация данных в Jupyter

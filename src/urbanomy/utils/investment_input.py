@@ -11,8 +11,6 @@ from loguru import logger
 
 INVESTMENT_NUMERIC_COLUMNS: tuple[str, ...] = (
     "land_value",
-    "land_value_after",
-    "land_value_before",
     "price_per_sotka",
     "residential",
     "business",
@@ -112,8 +110,6 @@ class InvestmentInputSpec:
 INPUT_SPEC = InvestmentInputSpec(
     required=("land_use", "land_value"),
     optional=(
-        "land_value_after",
-        "land_value_before",
         "residential",
         "business",
         "recreation",
@@ -129,8 +125,6 @@ INPUT_SPEC = InvestmentInputSpec(
         "build_floor_area_before",
     ),
     defaults={
-        "land_value_after": float("nan"),
-        "land_value_before": float("nan"),
         "residential": 0.0,
         "business": 0.0,
         "recreation": 0.0,

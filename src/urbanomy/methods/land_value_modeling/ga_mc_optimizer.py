@@ -20,7 +20,10 @@ from matplotlib.transforms import offset_copy
 from blocksnet.analysis.indicators import calculate_density_indicators
 from blocksnet.analysis.morphotypes import get_strelka_morphotypes
 from blocksnet.enums import LandUse
-from urbanomy.methods.investment_potential import prepare_investment_input, InvestmentAttractivenessAnalyzer
+from urbanomy.methods.investment_potential import (
+    DEFAULT_BENCHMARKS_RU,
+    InvestmentAttractivenessAnalyzer,
+)
 from .constants import (
     BlockColumn,
     CATEGORICAL_FEATURES,
@@ -46,15 +49,15 @@ class DistrictProblem(Problem):
         model: CatBoostRegressor,
         estimator_kwargs: Dict[str, Any],
         constraints: Dict[str, Dict[str, Any]],
-        benchmarks: Any,
         target_id: Any,
+        benchmarks: Mapping[LandUse, Dict[str, Any]] | None = None,
         target_id_column: str = BlockColumn.ID.value,
     ):
         self.blocks = blocks
         self.model = model
         self.estimator_kwargs = estimator_kwargs
         self.constraints = constraints
-        self.benchmarks = benchmarks
+        self.benchmarks = benchmarks or DEFAULT_BENCHMARKS_RU
         self.target_id = target_id
         self.target_id_column = target_id_column
         self.var_names = list(constraints.keys())
@@ -227,13 +230,13 @@ class DistrictProblem(Problem):
         discount_rate: float = 0.18,
     ):
         geonome_marked = self._mark_project_block(geonome)
-        investment_input = prepare_investment_input(
-            gdf=geonome_marked,
+        an = InvestmentAttractivenessAnalyzer(benchmarks=benchmarks)
+        summary = an.calculate_investment_metrics(
+            geonome_marked,
+            discount_rate=discount_rate,
+            show_project_totals=False,
             show_warning=False,
         )
-
-        an = InvestmentAttractivenessAnalyzer(benchmarks=benchmarks)
-        summary = an.calculate_investment_metrics(investment_input, discount_rate=discount_rate, show_project_totals=False, show_warning=False)
 
         npv_series = pd.to_numeric(summary["NPV"], errors="coerce").dropna()
         if npv_series.empty:

@@ -129,6 +129,65 @@ INVESTMENT_WEIGHTS: Final[dict[str, tuple[float, float]]] = {
     key: config.investment_weights for key, config in _CONFIGS_BY_KEY.items()
 }
 
+DEFAULT_BENCHMARKS_RU: Final[dict[LandUse, dict[str, float | int]]] = {
+    LandUse.RESIDENTIAL: {
+        "cost_build": 45_000,
+        "price_sale": 140_000,
+        "construction_years": 3,
+        "sale_years": 4,
+        "opex_rate": 800,
+        "cost_demolition": 900,
+    },
+    LandUse.BUSINESS: {
+        "cost_build": 55_000,
+        "rent_annual": 25_000,
+        "rent_years": 15,
+        "construction_years": 3,
+        "opex_rate": 1_300,
+        "cost_demolition": 900,
+    },
+    LandUse.RECREATION: {
+        "cost_build": 20_000,
+        "rent_annual": 7_500,
+        "rent_years": 15,
+        "construction_years": 3,
+        "opex_rate": 1_000,
+        "cost_demolition": 900,
+    },
+    LandUse.SPECIAL: {
+        "cost_build": 35_000,
+        "rent_annual": 11_000,
+        "rent_years": 15,
+        "construction_years": 3,
+        "opex_rate": 1_500,
+        "cost_demolition": 900,
+    },
+    LandUse.INDUSTRIAL: {
+        "cost_build": 38_000,
+        "rent_annual": 14_800,
+        "rent_years": 15,
+        "construction_years": 3,
+        "opex_rate": 700,
+        "cost_demolition": 900,
+    },
+    LandUse.AGRICULTURE: {
+        "cost_build": 25_000,
+        "rent_annual": 6_500,
+        "rent_years": 15,
+        "construction_years": 3,
+        "opex_rate": 300,
+        "cost_demolition": 900,
+    },
+    LandUse.TRANSPORT: {
+        "cost_build": 18_000,
+        "rent_annual": 8_200,
+        "rent_years": 15,
+        "construction_years": 3,
+        "opex_rate": 600,
+        "cost_demolition": 900,
+    },
+}
+
 
 DEFAULT_ECON_METRIC: str = "EI"
 DEFAULT_DISCOUNT_RATE: float = 0.18

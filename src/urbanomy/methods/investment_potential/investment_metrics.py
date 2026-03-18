@@ -20,6 +20,7 @@ from urbanomy.utils.investment_input import (
 )
 
 from .constants import (
+    DEFAULT_BENCHMARKS_RU,
     DEFAULT_DISCOUNT_RATE,
     DEFAULT_ECON_METRIC,
     SUMMARY_COLUMNS,
@@ -136,7 +137,7 @@ class InvestmentAttractivenessAnalyzer:
 
     def __init__(
         self,
-        benchmarks: Mapping[str | LandUse, Mapping[str, Any]],
+        benchmarks: Mapping[str | LandUse, Mapping[str, Any]] | None = None,
         weights_dict: Mapping[str | LandUse, Sequence[float]] | None = None,
         econ_metric: str = DEFAULT_ECON_METRIC,
         discount_rate: float | None = None,
@@ -145,9 +146,10 @@ class InvestmentAttractivenessAnalyzer:
 
         Parameters
         ----------
-        benchmarks : Mapping[str | LandUse, Mapping[str, Any]]
+        benchmarks : Mapping[str | LandUse, Mapping[str, Any]] or None, optional
             Mapping from land-use codes or ``LandUse`` enums to benchmark profiles describing
-            profitability assumptions (densities, prices, etc.).
+            profitability assumptions. If ``None``, uses
+            :data:`DEFAULT_BENCHMARKS_RU`.
         weights_dict : Mapping[str | LandUse, Sequence[float]] or None, optional
             Reserved for backward compatibility; ignored.
         econ_metric : str, optional
@@ -156,7 +158,9 @@ class InvestmentAttractivenessAnalyzer:
             Discount rate used when the benchmark profile does not specify one.
             If ``None``, ``DEFAULT_DISCOUNT_RATE`` is used.
         """
-        self._benchmarks_enum = self._normalise_benchmarks(benchmarks)
+        self._benchmarks_enum = self._normalise_benchmarks(
+            benchmarks or DEFAULT_BENCHMARKS_RU
+        )
         self.benchmarks = {
             land_use.value: dict(profile)
             for land_use, profile in self._benchmarks_enum.items()
@@ -664,7 +668,11 @@ class InvestmentAttractivenessAnalyzer:
             return pd.DataFrame(columns=SUMMARY_COLUMNS)
 
         needs_preparation = isinstance(gdf, gpd.GeoDataFrame) or "geometry" in gdf.columns
-        working = prepare_investment_input(gdf) if needs_preparation else gdf.copy()
+        working = (
+            prepare_investment_input(gdf, show_warning=show_warning)
+            if needs_preparation
+            else gdf.copy()
+        )
         if "land_use" not in working.columns:
             raise ValueError("Expected 'land_use' column in prepared data.")
 
@@ -810,3 +818,33 @@ class InvestmentAttractivenessAnalyzer:
                 print(" • Project metrics:    not available (no cashflows)")
 
         return summary
+
+
+def calculate_investment_metrics(
+    gdf: gpd.GeoDataFrame | pd.DataFrame,
+    benchmarks: Mapping[str | LandUse, Mapping[str, Any]] | None = None,
+    *,
+    weights_dict: Mapping[str | LandUse, Sequence[float]] | None = None,
+    econ_metric: str = DEFAULT_ECON_METRIC,
+    discount_rate: float | None = None,
+    show_project_totals: bool = True,
+    show_warning: bool = True,
+) -> pd.DataFrame:
+    """Convenience wrapper returning investment summary from raw scenario blocks.
+
+    Accepts the original scenario GeoDataFrame (for example ``blocks_full_value``),
+    prepares it internally with :func:`prepare_investment_input`, and returns the
+    same summary table as :meth:`InvestmentAttractivenessAnalyzer.calculate_investment_metrics`.
+    """
+    analyzer = InvestmentAttractivenessAnalyzer(
+        benchmarks=benchmarks,
+        weights_dict=weights_dict,
+        econ_metric=econ_metric,
+        discount_rate=discount_rate,
+    )
+    return analyzer.calculate_investment_metrics(
+        gdf,
+        discount_rate=discount_rate,
+        show_project_totals=show_project_totals,
+        show_warning=show_warning,
+    )

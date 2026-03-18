@@ -1,0 +1,285 @@
+"""Tool-calling agent for district optimization and Pareto-solution analysis."""
+
+from __future__ import annotations
+
+import json
+from typing import Any
+
+import geopandas as gpd
+from langchain_core.messages import HumanMessage
+
+from ._agent_utils import (
+    build_tool_agent,
+    extract_last_ai_message_text,
+    extract_last_tool_message,
+)
+from ._district_optimization_agent_formatting import (
+    compact_tool_output,
+    short_response_from_tool,
+)
+from ._district_optimization_intents import parse_district_optimization_intent
+from .models import DistrictOptimizationConfig
+from .prompts import DISTRICT_OPTIMIZATION_AGENT_PROMPT
+from .tools._district_optimization import latest_session_or_error, latest_session_summary
+from .tools.calculate_pareto_solution_investment_metrics import (
+    make_calculate_pareto_solution_investment_metrics_tool,
+)
+from .tools.get_pareto_solution_parameters import make_get_pareto_solution_parameters_tool
+from .tools.plot_district_optimization_pareto_front import (
+    make_plot_district_optimization_pareto_front_tool,
+)
+from .tools.plot_pareto_solution_impact import make_plot_pareto_solution_impact_tool
+from .tools.run_district_optimization import make_run_district_optimization_tool
+
+
+class DistrictOptimizationAgent:
+    """Stateful agent over district optimization tools."""
+
+    def __init__(
+        self,
+        *,
+        llm: Any,
+        baseline_blocks: gpd.GeoDataFrame,
+        optimization_config: DistrictOptimizationConfig,
+    ) -> None:
+        if llm is None:
+            raise ValueError("llm is required to build DistrictOptimizationAgent.")
+        self.llm = llm
+        self.session_store: dict[str, Any] = {}
+        self._run_tool = make_run_district_optimization_tool(
+            baseline_blocks=baseline_blocks,
+            optimization_config=optimization_config,
+            session_store=self.session_store,
+        )
+        self._plot_tool = make_plot_pareto_solution_impact_tool(session_store=self.session_store)
+        self._investment_tool = make_calculate_pareto_solution_investment_metrics_tool(
+            session_store=self.session_store
+        )
+        self._parameters_tool = make_get_pareto_solution_parameters_tool(
+            session_store=self.session_store
+        )
+        self._pareto_front_tool = make_plot_district_optimization_pareto_front_tool(
+            session_store=self.session_store
+        )
+        self._tools = [
+            self._run_tool,
+            self._plot_tool,
+            self._investment_tool,
+            self._parameters_tool,
+            self._pareto_front_tool,
+        ]
+        self._tools_by_name = {tool.name: tool for tool in self._tools}
+        self.agent = build_tool_agent(
+            llm=self.llm,
+            tools=self._tools,
+            system_prompt=DISTRICT_OPTIMIZATION_AGENT_PROMPT,
+        )
+
+    def invoke(self, user_request: str) -> dict[str, Any]:
+        """Execute the optimization agent for a free-form user request."""
+        text = str(user_request).strip()
+        if not text:
+            raise ValueError("user_request cannot be empty")
+        try:
+            raw_result = self.agent.invoke({"messages": [HumanMessage(content=text)]})
+        except Exception as exc:
+            return self._error(f"Не удалось обработать optimization-запрос: {exc}")
+
+        tool_name, tool_output = self._extract_last_tool_result(raw_result)
+        if tool_output is not None:
+            return {
+                "status": "ok",
+                "response": short_response_from_tool(
+                    tool_name=tool_name or "",
+                    tool_output=tool_output,
+                ),
+                "tool_name": tool_name,
+                "tool_output": compact_tool_output(
+                    tool_name=tool_name,
+                    tool_output=tool_output,
+                ),
+                "used_tool_fallback": False,
+            }
+
+        fallback = self._recover_missing_tool_call(text)
+        if fallback is not None:
+            return fallback
+
+        agent_text = extract_last_ai_message_text(raw_result)
+        return {
+            "status": "ok",
+            "response": agent_text or "Запрос обработан.",
+            "tool_name": None,
+            "tool_output": None,
+            "used_tool_fallback": False,
+        }
+
+    def run(self, user_request: str) -> dict[str, Any]:
+        return self.invoke(user_request)
+
+    def ask(self, user_request: str) -> dict[str, Any]:
+        return self.invoke(user_request)
+
+    def __call__(self, user_request: str) -> dict[str, Any]:
+        return self.invoke(user_request)
+
+    def _recover_missing_tool_call(self, user_request: str) -> dict[str, Any] | None:
+        intent = parse_district_optimization_intent(user_request)
+
+        if intent.kind == "unknown":
+            return None
+        if intent.kind == "session_summary":
+            return self._session_summary_response()
+        if intent.kind == "plot_pareto_front":
+            return self._invoke_named_tool(
+                tool_name="plot_district_optimization_pareto_front",
+                payload={},
+                used_tool_fallback=True,
+            )
+        if intent.kind == "run_optimization":
+            if intent.target_id is None:
+                return self._error("Не найден target_id. Укажите, например, target_id=86.")
+            return self._invoke_named_tool(
+                tool_name="run_district_optimization",
+                payload={
+                    "target_id": intent.target_id,
+                    "pop_size": intent.pop_size,
+                    "n_gen": intent.n_gen,
+                    "seed": intent.seed,
+                },
+                used_tool_fallback=True,
+            )
+        if intent.solution_number is None:
+            return self._error("Не найден номер решения. Укажите, например: 'решение 2'.")
+        if intent.kind == "plot_solution":
+            return self._invoke_named_tool(
+                tool_name="plot_pareto_solution_impact",
+                payload={"solution_number": intent.solution_number},
+                used_tool_fallback=True,
+            )
+        if intent.kind == "investment_metrics":
+            return self._invoke_named_tool(
+                tool_name="calculate_pareto_solution_investment_metrics",
+                payload={"solution_number": intent.solution_number},
+                used_tool_fallback=True,
+            )
+        if intent.kind == "solution_parameters":
+            return self._invoke_named_tool(
+                tool_name="get_pareto_solution_parameters",
+                payload={"solution_number": intent.solution_number},
+                used_tool_fallback=True,
+            )
+        return None
+
+    def _session_summary_response(self) -> dict[str, Any]:
+        try:
+            summary = latest_session_summary(latest_session_or_error(self.session_store))
+        except Exception as exc:
+            return self._error(str(exc))
+        return {
+            "status": "ok",
+            "response": short_response_from_tool(tool_name="session_summary", tool_output=summary),
+            "tool_name": "session_summary",
+            "tool_output": compact_tool_output(tool_name="session_summary", tool_output=summary),
+            "used_tool_fallback": True,
+        }
+
+    def _invoke_named_tool(
+        self,
+        *,
+        tool_name: str,
+        payload: dict[str, Any],
+        used_tool_fallback: bool,
+    ) -> dict[str, Any]:
+        tool = self._tools_by_name[tool_name]
+        clean_payload = {key: value for key, value in payload.items() if value is not None}
+        try:
+            tool_output = tool.invoke(clean_payload)
+        except Exception as exc:
+            return {
+                "status": "error",
+                "response": str(exc),
+                "tool_name": tool_name,
+                "tool_output": None,
+                "used_tool_fallback": used_tool_fallback,
+            }
+        return {
+            "status": "ok",
+            "response": short_response_from_tool(tool_name=tool_name, tool_output=tool_output),
+            "tool_name": tool_name,
+            "tool_output": compact_tool_output(tool_name=tool_name, tool_output=tool_output),
+            "used_tool_fallback": used_tool_fallback,
+        }
+
+    def _extract_last_tool_result(self, raw_result: dict[str, Any]) -> tuple[str | None, dict[str, Any] | None]:
+        message = extract_last_tool_message(raw_result)
+        if message is None:
+            return None, None
+        name = getattr(message, "name", None)
+        parsed = self._parse_tool_message_content(message.content)
+        return str(name) if name else None, parsed
+
+    @staticmethod
+    def _parse_tool_message_content(content: Any) -> dict[str, Any] | None:
+        if isinstance(content, dict):
+            return content
+        if isinstance(content, str):
+            try:
+                parsed = json.loads(content)
+            except json.JSONDecodeError:
+                return None
+            return parsed if isinstance(parsed, dict) else None
+        return None
+
+    @staticmethod
+    def _error(message: str) -> dict[str, Any]:
+        return {
+            "status": "error",
+            "response": message,
+            "tool_name": None,
+            "tool_output": None,
+            "used_tool_fallback": False,
+        }
+
+
+def create_district_optimization_agent(
+    *,
+    llm: Any,
+    baseline_blocks: gpd.GeoDataFrame,
+    model: Any,
+    orig_features: list[str] | tuple[str, ...],
+    categorical_features: list[str] | tuple[str, ...],
+    constraints_template: dict[str, dict[str, Any]] | None = None,
+    target_id_column: str = "id",
+    pop_size: int = 10,
+    n_gen: int = 15,
+    seed: int = 42,
+    eliminate_duplicates: bool = True,
+    save_history: bool = True,
+    use_history: bool = False,
+    verbose: bool = True,
+    use_service_features: bool | None = None,
+    service_features: list[str] | tuple[str, ...] | None = None,
+) -> DistrictOptimizationAgent:
+    """Factory for the district optimization agent."""
+    optimization_config = DistrictOptimizationConfig(
+        model=model,
+        orig_features=list(orig_features),
+        categorical_features=list(categorical_features),
+        constraints_template=constraints_template,
+        target_id_column=target_id_column,
+        pop_size=pop_size,
+        n_gen=n_gen,
+        seed=seed,
+        eliminate_duplicates=eliminate_duplicates,
+        save_history=save_history,
+        use_history=use_history,
+        verbose=verbose,
+        use_service_features=use_service_features,
+        service_features=list(service_features) if service_features is not None else None,
+    )
+    return DistrictOptimizationAgent(
+        llm=llm,
+        baseline_blocks=baseline_blocks,
+        optimization_config=optimization_config,
+    )

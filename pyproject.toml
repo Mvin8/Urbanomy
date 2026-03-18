@@ -23,7 +23,8 @@ dependencies = [ # здесь необходимо вести все устан�
     "matplotlib",            
     "loguru",
     "catboost",
-    "libpysal"
+    "libpysal",
+    "pymoo"
 ]
 
 classifiers = [ # метаданные для описания проекта пользователям, например, на PyPI: какая лицензия, какое предназначение
@@ -43,10 +44,12 @@ include = ["urbanomy*"]
 
 [project.optional-dependencies]
 llm = [
+    "langchain>=0.3,<0.4",
     "langchain-core>=0.3,<0.4",
     "langchain-ollama>=0.2,<0.4",
     "langchain-openai>=0.2,<0.4",
-    "langgraph>=0.2,<1.1"
+    "langgraph>=0.2,<1.1",
+    "pydantic>=2,<3"
 ]
 
 dev = [ # зависимости, необходимые для разработки библиотеки, но не для её использования

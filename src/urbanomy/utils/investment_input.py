@@ -263,11 +263,12 @@ def prepare_investment_input(
     else:
         polygon_gdf["land_value_after"] = polygon_gdf["land_value"]
 
-    polygon_gdf["land_value"] = polygon_gdf["land_value_after"]
-
     if "land_value_before" in polygon_gdf.columns:
         polygon_gdf["land_value_before"] = pd.to_numeric(
             polygon_gdf["land_value_before"], errors="coerce"
+        )
+        polygon_gdf["land_value"] = polygon_gdf["land_value_before"].fillna(
+            polygon_gdf["land_value_after"]
         )
     else:
         if show_warning:
@@ -276,6 +277,7 @@ def prepare_investment_input(
                 "значение оставлено пустым, текущая цена записана в 'land_value_after'."
             )
         polygon_gdf["land_value_before"] = float("nan")
+        polygon_gdf["land_value"] = polygon_gdf["land_value_after"]
 
     if "build_floor_area_before" in polygon_gdf.columns:
         polygon_gdf["build_floor_area_before"] = pd.to_numeric(

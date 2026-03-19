@@ -7,7 +7,7 @@ from typing import Any
 from langchain_core.tools import tool
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from ._district_optimization import get_solution_parameters, latest_session_or_error
+from .internal.district_optimization import get_solution_parameters, latest_session_or_error
 
 
 class GetParetoSolutionParametersInput(BaseModel):

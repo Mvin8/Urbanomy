@@ -34,6 +34,9 @@ def short_response_from_tool(*, tool_name: str, tool_output: dict[str, Any]) -> 
     if tool_name == "plot_district_optimization_pareto_front":
         text = str(tool_output.get("summary_text", "")).strip()
         return text or "Построен график Парето-фронта."
+    if tool_name == "get_district_optimization_problem_statement":
+        text = str(tool_output.get("problem_statement_text", "")).strip()
+        return text or "Показана постановка задачи оптимизации."
     return "Запрос обработан."
 
 
@@ -81,6 +84,18 @@ def compact_tool_output(
             "land_use_labels": tool_output.get("land_use_labels"),
             "summary_text": tool_output.get("summary_text"),
             "figure_created": tool_output.get("figure_created"),
+        }
+    if tool_name == "get_district_optimization_problem_statement":
+        return {
+            "target_id": tool_output.get("target_id"),
+            "site_area": tool_output.get("site_area"),
+            "source": tool_output.get("source"),
+            "variable_names": tool_output.get("variable_names"),
+            "decision_variables": tool_output.get("decision_variables"),
+            "objectives": tool_output.get("objectives"),
+            "repair_rules": tool_output.get("repair_rules"),
+            "tunable_parameters": tool_output.get("tunable_parameters"),
+            "problem_statement_text": tool_output.get("problem_statement_text"),
         }
     return tool_output
 

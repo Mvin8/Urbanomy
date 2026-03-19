@@ -8,7 +8,7 @@ import geopandas as gpd
 from langchain_core.tools import tool
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from ._plotting import build_target_block_tool_payload, render_target_block_map
+from .internal.plotting import build_target_block_tool_payload, render_target_block_map
 
 
 class PlotTargetBlockMapInput(BaseModel):

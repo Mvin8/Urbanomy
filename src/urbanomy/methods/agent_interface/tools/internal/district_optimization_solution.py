@@ -12,8 +12,8 @@ import pandas as pd
 from urbanomy.methods.investment_potential import calculate_investment_metrics
 from urbanomy.methods.land_value_modeling import LandPriceEstimator, ScenarioTEPModifier
 
-from ..models import DistrictOptimizationSession
-from ._district_optimization_formatting import (
+from ...models import DistrictOptimizationSession
+from .district_optimization_formatting import (
     build_params_text,
     clean_text_block,
     dataframe_records,

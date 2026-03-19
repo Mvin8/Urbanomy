@@ -10,15 +10,15 @@ import pandas as pd
 
 from urbanomy.methods.land_value_modeling import plot_scenario_impact
 
-from ..models import DistrictOptimizationSession
-from ._district_optimization_formatting import (
+from ...models import DistrictOptimizationSession
+from .district_optimization_formatting import (
     build_pareto_front_text,
     build_plot_solution_summary_text,
     json_mapping,
     json_value,
     to_float,
 )
-from ._district_optimization_solution import build_blocks_full_value_for_solution
+from .district_optimization_solution import build_blocks_full_value_for_solution
 
 
 def plot_solution_impact(

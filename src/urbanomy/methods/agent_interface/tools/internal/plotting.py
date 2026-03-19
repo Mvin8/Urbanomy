@@ -8,7 +8,7 @@ import geopandas as gpd
 import matplotlib.pyplot as plt
 import pandas as pd
 
-from ..models import LandValueVisualizationArtifact, TargetBlockVisualizationArtifact
+from ...models import LandValueVisualizationArtifact, TargetBlockVisualizationArtifact
 
 
 def render_land_value_map(

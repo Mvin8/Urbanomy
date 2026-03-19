@@ -8,23 +8,26 @@ from typing import Any
 import geopandas as gpd
 from langchain_core.messages import HumanMessage
 
-from ._agent_utils import (
+from .internal.agent_utils import (
     build_tool_agent,
     extract_last_ai_message_text,
     extract_last_tool_message,
 )
-from ._district_optimization_agent_formatting import (
+from .internal.district_optimization_agent_formatting import (
     compact_tool_output,
     short_response_from_tool,
 )
-from ._district_optimization_intents import parse_district_optimization_intent
+from .internal.district_optimization_intents import parse_district_optimization_intent
 from .models import DistrictOptimizationConfig
 from .prompts import DISTRICT_OPTIMIZATION_AGENT_PROMPT
-from .tools._district_optimization import latest_session_or_error, latest_session_summary
+from .tools.internal.district_optimization import latest_session_or_error, latest_session_summary
 from .tools.calculate_pareto_solution_investment_metrics import (
     make_calculate_pareto_solution_investment_metrics_tool,
 )
 from .tools.get_pareto_solution_parameters import make_get_pareto_solution_parameters_tool
+from .tools.get_district_optimization_problem_statement import (
+    make_get_district_optimization_problem_statement_tool,
+)
 from .tools.plot_district_optimization_pareto_front import (
     make_plot_district_optimization_pareto_front_tool,
 )
@@ -58,6 +61,11 @@ class DistrictOptimizationAgent:
         self._parameters_tool = make_get_pareto_solution_parameters_tool(
             session_store=self.session_store
         )
+        self._problem_statement_tool = make_get_district_optimization_problem_statement_tool(
+            baseline_blocks=baseline_blocks,
+            optimization_config=optimization_config,
+            session_store=self.session_store,
+        )
         self._pareto_front_tool = make_plot_district_optimization_pareto_front_tool(
             session_store=self.session_store
         )
@@ -66,6 +74,7 @@ class DistrictOptimizationAgent:
             self._plot_tool,
             self._investment_tool,
             self._parameters_tool,
+            self._problem_statement_tool,
             self._pareto_front_tool,
         ]
         self._tools_by_name = {tool.name: tool for tool in self._tools}
@@ -87,11 +96,13 @@ class DistrictOptimizationAgent:
 
         tool_name, tool_output = self._extract_last_tool_result(raw_result)
         if tool_output is not None:
+            agent_text = extract_last_ai_message_text(raw_result)
             return {
                 "status": "ok",
-                "response": short_response_from_tool(
+                "response": self._build_response_from_tool(
                     tool_name=tool_name or "",
                     tool_output=tool_output,
+                    agent_text=agent_text,
                 ),
                 "tool_name": tool_name,
                 "tool_output": compact_tool_output(
@@ -130,6 +141,12 @@ class DistrictOptimizationAgent:
             return None
         if intent.kind == "session_summary":
             return self._session_summary_response()
+        if intent.kind == "problem_statement":
+            return self._invoke_named_tool(
+                tool_name="get_district_optimization_problem_statement",
+                payload={"target_id": intent.target_id},
+                used_tool_fallback=True,
+            )
         if intent.kind == "plot_pareto_front":
             return self._invoke_named_tool(
                 tool_name="plot_district_optimization_pareto_front",
@@ -205,11 +222,28 @@ class DistrictOptimizationAgent:
             }
         return {
             "status": "ok",
-            "response": short_response_from_tool(tool_name=tool_name, tool_output=tool_output),
+            "response": self._build_response_from_tool(
+                tool_name=tool_name,
+                tool_output=tool_output,
+                agent_text="",
+            ),
             "tool_name": tool_name,
             "tool_output": compact_tool_output(tool_name=tool_name, tool_output=tool_output),
             "used_tool_fallback": used_tool_fallback,
         }
+
+    @staticmethod
+    def _build_response_from_tool(
+        *,
+        tool_name: str,
+        tool_output: dict[str, Any],
+        agent_text: str,
+    ) -> str:
+        base = short_response_from_tool(tool_name=tool_name, tool_output=tool_output)
+        ai_text = str(agent_text).strip()
+        if tool_name == "get_district_optimization_problem_statement" and ai_text and ai_text != base:
+            return f"{base}\n\n{ai_text}"
+        return base
 
     def _extract_last_tool_result(self, raw_result: dict[str, Any]) -> tuple[str | None, dict[str, Any] | None]:
         message = extract_last_tool_message(raw_result)

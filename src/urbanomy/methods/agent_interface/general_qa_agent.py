@@ -7,7 +7,7 @@ from typing import Any, Callable
 from langchain_core.messages import HumanMessage
 from langchain_core.tools import tool
 
-from ._agent_utils import build_tool_agent, extract_last_ai_message_text
+from .internal.agent_utils import build_tool_agent, extract_last_ai_message_text
 from .prompts import GENERAL_QA_AGENT_SYSTEM_PROMPT
 
 

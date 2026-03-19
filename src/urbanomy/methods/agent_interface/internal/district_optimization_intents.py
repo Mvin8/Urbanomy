@@ -13,6 +13,7 @@ class DistrictOptimizationIntent:
 
     kind: Literal[
         "run_optimization",
+        "problem_statement",
         "session_summary",
         "plot_pareto_front",
         "plot_solution",
@@ -31,6 +32,12 @@ def parse_district_optimization_intent(user_request: str) -> DistrictOptimizatio
     """Parse a free-form district optimization request into a structured intent."""
     text = str(user_request).strip()
     lowered = text.lower()
+
+    if _is_problem_statement_request(lowered):
+        return DistrictOptimizationIntent(
+            kind="problem_statement",
+            target_id=extract_target_id(text),
+        )
 
     if _is_optimization_request(lowered):
         return DistrictOptimizationIntent(
@@ -95,6 +102,25 @@ def extract_optional_int(pattern: str, user_request: str) -> int | None:
 
 def _is_optimization_request(text: str) -> bool:
     return any(marker in text for marker in ("оптимиз", "pareto", "парето", "nsga"))
+
+
+def _is_problem_statement_request(text: str) -> bool:
+    primary_markers = (
+        "постановк",
+        "ограничени",
+        "целевая функц",
+        "целевая функция",
+        "переменн",
+        "что изменить",
+        "что поменять",
+        "как настроить",
+        "настроить оптимизацию",
+        "параметры оптимизации",
+    )
+    context_markers = ("оптимизац", "задач", "квартал", "target_id", "блок")
+    return any(marker in text for marker in primary_markers) and any(
+        marker in text for marker in context_markers
+    )
 
 
 def _is_summary_request(text: str) -> bool:

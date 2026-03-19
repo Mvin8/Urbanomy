@@ -15,6 +15,7 @@ from .models import (
     UrbanomyOrchestratorRequest,
     UrbanomyOrchestratorResult,
     UrbanomyOrchestratorRouteDecision,
+    VisualizationResult,
     VisualizationRouteDecision,
 )
 
@@ -29,6 +30,7 @@ __all__ = [
     "UrbanomyOrchestratorRequest",
     "UrbanomyOrchestratorResult",
     "UrbanomyOrchestratorRouteDecision",
+    "VisualizationResult",
     "VisualizationRouteDecision",
 ]
 
@@ -53,6 +55,14 @@ _load_optional(
     [
         "GeneralQaAgent",
         "create_general_qa_agent",
+    ],
+)
+_load_optional(
+    ".visualization_agent",
+    [
+        "VisualizationAgent",
+        "create_visualization_agent",
+        "visualize_from_request",
     ],
 )
 _load_optional(

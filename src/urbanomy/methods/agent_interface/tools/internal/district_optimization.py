@@ -1,17 +1,17 @@
 """Compatibility facade for district optimization helper functions."""
 
-from ._district_optimization_plots import (
+from .district_optimization_plots import (
     plot_optimization_pareto_front,
     plot_solution_impact,
 )
-from ._district_optimization_session import (
+from .district_optimization_session import (
     build_default_constraints,
     latest_session_or_error,
     latest_session_summary,
     resolve_constraints,
     run_optimization_session,
 )
-from ._district_optimization_solution import (
+from .district_optimization_solution import (
     build_blocks_full_value_for_solution,
     calculate_solution_investment_summary,
     get_solution_parameters,

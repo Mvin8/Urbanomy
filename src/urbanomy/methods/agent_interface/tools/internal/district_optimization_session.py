@@ -10,8 +10,8 @@ import pandas as pd
 from urbanomy.methods.land_value_modeling import build_pareto_front_dataframe
 from urbanomy.methods.land_value_modeling.ga_mc_optimizer import DistrictProblem
 
-from ..models import DistrictOptimizationConfig, DistrictOptimizationSession
-from ._district_optimization_formatting import json_value
+from ...models import DistrictOptimizationConfig, DistrictOptimizationSession
+from .district_optimization_formatting import json_value
 
 try:
     from pymoo.algorithms.moo.nsga2 import NSGA2

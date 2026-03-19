@@ -6,7 +6,7 @@ from typing import Any
 
 from langchain_core.tools import tool
 
-from ._district_optimization import latest_session_or_error, plot_optimization_pareto_front
+from .internal.district_optimization import latest_session_or_error, plot_optimization_pareto_front
 
 
 def make_plot_district_optimization_pareto_front_tool(*, session_store: dict[str, Any]):

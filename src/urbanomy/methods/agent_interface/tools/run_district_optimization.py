@@ -9,7 +9,7 @@ from langchain_core.tools import tool
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from ..models import DistrictOptimizationConfig
-from ._district_optimization import (
+from .internal.district_optimization import (
     latest_session_summary,
     plot_optimization_pareto_front,
     run_optimization_session,

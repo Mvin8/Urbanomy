@@ -7,7 +7,7 @@ from typing import Any
 import geopandas as gpd
 from langchain_core.tools import tool
 
-from ._plotting import build_tool_payload, render_land_value_map
+from .internal.plotting import build_tool_payload, render_land_value_map
 
 
 def make_plot_total_land_value_map_tool(

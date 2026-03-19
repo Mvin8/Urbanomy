@@ -42,14 +42,22 @@ class LandValueVisualizationRequest(BaseModel):
 
 
 class VisualizationRouteDecision(BaseModel):
-    """Structured routing output for the land-value visualization graph."""
+    """Structured routing output for the unified visualization graph."""
 
     model_config = ConfigDict(extra="forbid")
 
-    route: Literal["plot_total_land_value_map", "plot_land_value_per_100m2_map"]
-    metric_kind: Literal["total_land_value", "land_value_per_100m2"]
-    price_column: Literal["land_value", "land_value_per_100m2"]
+    route: Literal[
+        "plot_total_land_value_map",
+        "plot_land_value_per_100m2_map",
+        "plot_target_block_map",
+    ]
+    metric_kind: Literal["total_land_value", "land_value_per_100m2", "target_block"]
+    price_column: str
     title: str = Field(description="Plot title that should be passed to the selected tool.")
+    target_id: int | None = Field(
+        default=None,
+        description="Target block id for plot_target_block_map; otherwise null.",
+    )
     reasoning: str = Field(description="Short explanation of why the route was chosen.")
 
 
@@ -132,6 +140,28 @@ class TargetBlockVisualizationResult(BaseModel):
     artifact: TargetBlockVisualizationArtifact | None = None
 
 
+class VisualizationResult(BaseModel):
+    """Final result returned by the unified visualization agent."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True, extra="forbid")
+
+    user_request: str
+    route: Literal[
+        "plot_total_land_value_map",
+        "plot_land_value_per_100m2_map",
+        "plot_target_block_map",
+    ]
+    metric_kind: Literal["total_land_value", "land_value_per_100m2", "target_block"]
+    price_column: str
+    title: str
+    reasoning: str
+    target_id: int | None = None
+    agent_message: str = ""
+    used_tool_fallback: bool = False
+    tool_payload: dict[str, Any] = Field(default_factory=dict)
+    artifact: LandValueVisualizationArtifact | TargetBlockVisualizationArtifact | None = None
+
+
 class DistrictOptimizationConfig(BaseModel):
     """Configuration required to run district optimization tools."""
 
@@ -188,6 +218,7 @@ class UrbanomyOrchestratorRouteDecision(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     route: Literal[
+        "visualization",
         "land_value_visualization",
         "target_block_visualization",
         "district_optimization",
@@ -204,6 +235,7 @@ class UrbanomyOrchestratorResult(BaseModel):
 
     user_request: str
     route: Literal[
+        "visualization",
         "land_value_visualization",
         "target_block_visualization",
         "district_optimization",
@@ -212,7 +244,7 @@ class UrbanomyOrchestratorResult(BaseModel):
     ]
     reasoning: str
     response: str = ""
-    visualization_result: LandValueVisualizationResult | None = None
+    visualization_result: VisualizationResult | None = None
     target_block_visualization_result: TargetBlockVisualizationResult | None = None
     district_optimization_result: Any | None = None
 

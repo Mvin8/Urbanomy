@@ -7,7 +7,7 @@ from typing import Any
 from langchain_core.tools import tool
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from ._district_optimization import (
+from .internal.district_optimization import (
     calculate_solution_investment_summary,
     latest_session_or_error,
 )

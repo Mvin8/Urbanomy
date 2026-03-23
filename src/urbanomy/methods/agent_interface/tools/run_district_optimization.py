@@ -75,16 +75,27 @@ def make_run_district_optimization_tool(
             Stores the created session as the latest optimization session and
             replaces the previous one.
         """
+        runtime_overrides = dict(session_store.get("algorithm_overrides") or {})
+        resolved_pop_size = pop_size if pop_size is not None else runtime_overrides.get("pop_size")
+        resolved_n_gen = n_gen if n_gen is not None else runtime_overrides.get("n_gen")
+        resolved_seed = seed if seed is not None else runtime_overrides.get("seed")
         session = run_optimization_session(
             blocks=baseline_blocks,
             config=optimization_config,
             target_id=target_id,
-            pop_size=pop_size,
-            n_gen=n_gen,
-            seed=seed,
+            pop_size=resolved_pop_size,
+            n_gen=resolved_n_gen,
+            seed=resolved_seed,
         )
         session_store["latest_district_optimization_session"] = session
         summary = latest_session_summary(session)
+        summary["algorithm_settings"] = {
+            "pop_size": int(
+                resolved_pop_size if resolved_pop_size is not None else optimization_config.pop_size
+            ),
+            "n_gen": int(resolved_n_gen if resolved_n_gen is not None else optimization_config.n_gen),
+            "seed": int(resolved_seed if resolved_seed is not None else optimization_config.seed),
+        }
         pareto_front_plot = plot_optimization_pareto_front(session)
         summary["pareto_front_summary_text"] = pareto_front_plot.get("summary_text")
         summary["pareto_front_plotted"] = bool(pareto_front_plot.get("figure_created"))

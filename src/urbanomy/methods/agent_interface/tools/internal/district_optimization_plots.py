@@ -70,6 +70,7 @@ def plot_solution_impact(
             target_delta_rub=target_delta_rub,
             target_delta_pct=target_delta_pct,
         ),
+        "figure": scenario_result.get("figure"),
         "figure_created": scenario_result.get("figure") is not None,
     }
 
@@ -172,6 +173,7 @@ def plot_optimization_pareto_front(session: DistrictOptimizationSession) -> dict
         "n_pareto_points": int(len(np.asarray(result.F))),
         "land_use_labels": [str(item) for item in unique_lu.tolist()],
         "baseline_land_value": json_value(baseline_land_value),
+        "figure": fig,
         "figure_created": fig is not None,
         "summary_text": build_pareto_front_text(
             n_points=int(len(x_all)),

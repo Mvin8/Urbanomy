@@ -51,6 +51,13 @@ def _load_optional(module_name: str, names: list[str]) -> None:
 
 
 _load_optional(
+    ".block_parameters_agent",
+    [
+        "BlockParametersAgent",
+        "create_block_parameters_agent",
+    ],
+)
+_load_optional(
     ".general_qa_agent",
     [
         "GeneralQaAgent",
@@ -92,5 +99,11 @@ _load_optional(
     [
         "UrbanomyOrchestrator",
         "create_urbanomy_orchestrator",
+    ],
+)
+_load_optional(
+    ".chat_runtime",
+    [
+        "create_chat_runtime",
     ],
 )

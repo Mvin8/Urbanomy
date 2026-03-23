@@ -27,14 +27,17 @@ class VisualizationState(TypedDict, total=False):
     """State passed through the unified visualization graph."""
 
     user_request: str
-    route_decision: VisualizationRouteDecision
-    agent_result: dict[str, Any]
+    route_decision: dict[str, Any]
+    agent_message: str
     used_tool_fallback: bool
-    result: VisualizationResult
+    result_payload: dict[str, Any]
 
 
 class VisualizationAgent:
     """Handle all visualization requests with one routing and tool-calling agent."""
+
+    _LLM_ROUTE_CONFIDENCE_THRESHOLD = 0.65
+    _LLM_ROUTE_MIN_CONFIDENCE = 0.35
 
     def __init__(
         self,
@@ -111,7 +114,12 @@ class VisualizationAgent:
             raise ValueError("user_request cannot be empty")
         self._artifact_store.clear()
         output = self.graph.invoke({"user_request": text})
-        return output["result"]
+        result_payload = dict(output["result_payload"])
+        artifact = self._artifact_store.get(str(result_payload["route"]))
+        return VisualizationResult(
+            **result_payload,
+            artifact=artifact,
+        )
 
     def run(self, user_request: str) -> VisualizationResult:
         return self.invoke(user_request)
@@ -135,46 +143,28 @@ class VisualizationAgent:
 
     def _router_node(self, state: VisualizationState) -> dict[str, Any]:
         user_request = state["user_request"]
-        heuristic = self._heuristic_route(user_request)
-        if heuristic is not None:
-            return {"route_decision": heuristic}
-
         decision = invoke_structured_router(
             llm=self.llm,
             schema=VisualizationRouteDecision,
             system_prompt=VISUALIZATION_ROUTER_SYSTEM_PROMPT,
             user_request=user_request,
         )
+        heuristic = self._heuristic_route(user_request)
         if decision is not None:
-            if decision.route == "plot_target_block_map" and decision.target_id is None:
-                target_id = self._extract_target_id(user_request)
-                if target_id is not None:
-                    decision = decision.model_copy(
-                        update={
-                            "target_id": target_id,
-                            "price_column": self.id_column,
-                            "title": self.target_block_title_template.format(target_id=target_id),
-                        }
-                    )
-                else:
-                    decision = VisualizationRouteDecision(
-                        route="plot_total_land_value_map",
-                        metric_kind="total_land_value",
-                        price_column="land_value",
-                        title=self.default_total_title,
-                        reasoning="Маршрут квартала без target_id недоопределён, выбрана карта полной стоимости участка.",
-                    )
-            return {"route_decision": decision}
+            decision = self._normalize_llm_decision(decision, user_request=user_request)
+            if self._should_accept_llm_route(decision):
+                return {"route_decision": decision.model_dump()}
+            if heuristic is not None:
+                return {"route_decision": heuristic.model_dump()}
+            if float(decision.confidence) >= self._LLM_ROUTE_MIN_CONFIDENCE:
+                return {"route_decision": decision.model_dump()}
+        elif heuristic is not None:
+            return {"route_decision": heuristic.model_dump()}
 
-        return {
-            "route_decision": VisualizationRouteDecision(
-                route="plot_total_land_value_map",
-                metric_kind="total_land_value",
-                price_column="land_value",
-                title=self.default_total_title,
-                reasoning="Точный маршрут не распознан, выбрана визуализация полной стоимости участка.",
-            )
-        }
+        if heuristic is not None:
+            return {"route_decision": heuristic.model_dump()}
+
+        return {"route_decision": self._default_route_decision().model_dump()}
 
     def _heuristic_route(self, user_request: str) -> VisualizationRouteDecision | None:
         text = user_request.lower()
@@ -217,6 +207,7 @@ class VisualizationAgent:
                 title=self.target_block_title_template.format(target_id=target_id),
                 target_id=target_id,
                 reasoning="В запросе указан квартал по id или target_id.",
+                confidence=0.9,
             )
         if any(marker in text for marker in per_100m2_markers):
             return VisualizationRouteDecision(
@@ -225,6 +216,7 @@ class VisualizationAgent:
                 price_column="land_value_per_100m2",
                 title=self.default_unit_title,
                 reasoning="В запросе упомянута стоимость за сотку или за 100 м2.",
+                confidence=0.86,
             )
         if any(marker in text for marker in total_markers):
             return VisualizationRouteDecision(
@@ -233,11 +225,52 @@ class VisualizationAgent:
                 price_column="land_value",
                 title=self.default_total_title,
                 reasoning="В запросе упомянута полная стоимость участка.",
+                confidence=0.84,
             )
         return None
 
+    @classmethod
+    def _should_accept_llm_route(cls, decision: VisualizationRouteDecision) -> bool:
+        return float(decision.confidence) >= cls._LLM_ROUTE_CONFIDENCE_THRESHOLD
+
+    def _normalize_llm_decision(
+        self,
+        decision: VisualizationRouteDecision,
+        *,
+        user_request: str,
+    ) -> VisualizationRouteDecision:
+        if decision.route != "plot_target_block_map" or decision.target_id is not None:
+            return decision
+        target_id = self._extract_target_id(user_request)
+        if target_id is not None:
+            return decision.model_copy(
+                update={
+                    "target_id": target_id,
+                    "price_column": self.id_column,
+                    "title": self.target_block_title_template.format(target_id=target_id),
+                }
+            )
+        return VisualizationRouteDecision(
+            route="plot_total_land_value_map",
+            metric_kind="total_land_value",
+            price_column="land_value",
+            title=self.default_total_title,
+            reasoning="Маршрут квартала без target_id недоопределён, выбрана карта полной стоимости участка.",
+            confidence=max(float(decision.confidence) - 0.2, 0.0),
+        )
+
+    def _default_route_decision(self) -> VisualizationRouteDecision:
+        return VisualizationRouteDecision(
+            route="plot_total_land_value_map",
+            metric_kind="total_land_value",
+            price_column="land_value",
+            title=self.default_total_title,
+            reasoning="Точный маршрут не распознан, выбрана визуализация полной стоимости участка.",
+            confidence=0.2,
+        )
+
     def _execute_visualization_node(self, state: VisualizationState) -> dict[str, Any]:
-        decision = state["route_decision"]
+        decision = VisualizationRouteDecision.model_validate(state["route_decision"])
         self._artifact_store.pop(decision.route, None)
         execution_request = self._build_execution_request(
             user_request=state["user_request"],
@@ -246,12 +279,17 @@ class VisualizationAgent:
         try:
             agent_result = self._agent.invoke({"messages": [HumanMessage(content=execution_request)]})
         except Exception:
-            agent_result = {}
+            agent_message = ""
+        else:
+            agent_message = extract_last_ai_message_text(agent_result)
         used_tool_fallback = False
         if decision.route not in self._artifact_store:
             used_tool_fallback = True
             self._invoke_tool_fallback(decision)
-        return {"agent_result": agent_result, "used_tool_fallback": used_tool_fallback}
+        return {
+            "agent_message": agent_message,
+            "used_tool_fallback": used_tool_fallback,
+        }
 
     def _build_execution_request(
         self,
@@ -280,25 +318,25 @@ class VisualizationAgent:
         self._plot_target_block_tool.invoke({"target_id": route_decision.target_id})
 
     def _finalize_node(self, state: VisualizationState) -> dict[str, Any]:
-        decision = state["route_decision"]
+        decision = VisualizationRouteDecision.model_validate(state["route_decision"])
         artifact = self._artifact_store.get(decision.route)
         target_id = decision.target_id if decision.route == "plot_target_block_map" else None
         if artifact is not None and hasattr(artifact, "target_id"):
             target_id = int(getattr(artifact, "target_id"))
-        result = VisualizationResult(
-            user_request=state["user_request"],
-            route=decision.route,
-            metric_kind=decision.metric_kind,
-            price_column=decision.price_column,
-            title=artifact.title if artifact is not None else decision.title,
-            reasoning=decision.reasoning,
-            target_id=target_id,
-            agent_message=extract_last_ai_message_text(state.get("agent_result", {})),
-            used_tool_fallback=bool(state.get("used_tool_fallback", False)),
-            tool_payload=artifact.tool_payload() if artifact is not None else {},
-            artifact=artifact,
-        )
-        return {"result": result}
+        return {
+            "result_payload": {
+                "user_request": state["user_request"],
+                "route": decision.route,
+                "metric_kind": decision.metric_kind,
+                "price_column": decision.price_column,
+                "title": artifact.title if artifact is not None else decision.title,
+                "reasoning": decision.reasoning,
+                "target_id": target_id,
+                "agent_message": str(state.get("agent_message", "")).strip(),
+                "used_tool_fallback": bool(state.get("used_tool_fallback", False)),
+                "tool_payload": artifact.tool_payload() if artifact is not None else {},
+            }
+        }
 
     @staticmethod
     def _extract_target_id(user_request: str) -> int | None:

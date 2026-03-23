@@ -49,7 +49,23 @@ def extract_message_text(message: Any) -> str:
     if isinstance(content, str):
         return content.strip()
     if isinstance(content, list):
-        return " ".join(str(item) for item in content).strip()
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, str):
+                text = item.strip()
+                if text:
+                    parts.append(text)
+                continue
+            if isinstance(item, dict):
+                item_type = str(item.get("type", "")).strip().lower()
+                text_value = item.get("text")
+                if isinstance(text_value, str) and (
+                    item_type in {"", "text", "output_text", "input_text"}
+                ):
+                    text = text_value.strip()
+                    if text:
+                        parts.append(text)
+        return "\n".join(parts).strip()
     return str(content).strip()
 
 

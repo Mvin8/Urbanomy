@@ -59,6 +59,12 @@ class VisualizationRouteDecision(BaseModel):
         description="Target block id for plot_target_block_map; otherwise null.",
     )
     reasoning: str = Field(description="Short explanation of why the route was chosen.")
+    confidence: float = Field(
+        default=0.5,
+        ge=0.0,
+        le=1.0,
+        description="Router confidence from 0.0 to 1.0.",
+    )
 
 
 class LandValueVisualizationArtifact(BaseModel):
@@ -221,11 +227,18 @@ class UrbanomyOrchestratorRouteDecision(BaseModel):
         "visualization",
         "land_value_visualization",
         "target_block_visualization",
+        "block_parameters",
         "district_optimization",
         "general_qa",
         "unsupported",
     ]
     reasoning: str = Field(description="Short explanation of why the route was chosen.")
+    confidence: float = Field(
+        default=0.5,
+        ge=0.0,
+        le=1.0,
+        description="Router confidence from 0.0 to 1.0.",
+    )
 
 
 class UrbanomyOrchestratorResult(BaseModel):
@@ -238,6 +251,7 @@ class UrbanomyOrchestratorResult(BaseModel):
         "visualization",
         "land_value_visualization",
         "target_block_visualization",
+        "block_parameters",
         "district_optimization",
         "general_qa",
         "unsupported",
@@ -246,6 +260,7 @@ class UrbanomyOrchestratorResult(BaseModel):
     response: str = ""
     visualization_result: VisualizationResult | None = None
     target_block_visualization_result: TargetBlockVisualizationResult | None = None
+    block_parameters_result: Any | None = None
     district_optimization_result: Any | None = None
 
     def __repr__(self) -> str:

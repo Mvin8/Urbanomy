@@ -82,26 +82,36 @@ def make_get_district_optimization_problem_statement_tool(
         session = None
         resolved_target_id = target_id
         if resolved_target_id is None:
-            session = latest_session_or_error(session_store)
-            source = "active_session"
-            resolved_target_id = int(session.target_id)
+            try:
+                session = latest_session_or_error(session_store)
+            except Exception:
+                session = None
+                source = "config_defaults"
+            else:
+                source = "active_session"
+                resolved_target_id = int(session.target_id)
 
-        site_area = _resolve_site_area(
-            baseline_blocks=baseline_blocks,
-            target_id_column=optimization_config.target_id_column,
-            target_id=int(resolved_target_id),
-        )
+        site_area: float | None = None
+        if resolved_target_id is not None:
+            site_area = _resolve_site_area(
+                baseline_blocks=baseline_blocks,
+                target_id_column=optimization_config.target_id_column,
+                target_id=int(resolved_target_id),
+            )
 
-        if session is not None and int(session.target_id) == int(resolved_target_id):
+        if session is not None and resolved_target_id is not None and int(session.target_id) == int(resolved_target_id):
             constraints = dict(session.problem.constraints)
             variable_names = list(getattr(session.problem, "var_names", constraints.keys()))
-        else:
+        elif site_area is not None:
             constraints = (
                 resolve_constraints(optimization_config.constraints_template, site_area=site_area)
                 if optimization_config.constraints_template
                 else build_default_constraints(site_area)
             )
             variable_names = list(constraints.keys())
+        else:
+            constraints = {}
+            variable_names = []
 
         decision_variables = [
             {
@@ -125,11 +135,12 @@ def make_get_district_optimization_problem_statement_tool(
             },
         ]
         repair_rules = _repair_rules(site_area=site_area)
+        runtime_overrides = dict(session_store.get("algorithm_overrides") or {})
         tunable_parameters = {
             "algorithm": {
-                "pop_size_default": int(optimization_config.pop_size),
-                "n_gen_default": int(optimization_config.n_gen),
-                "seed_default": int(optimization_config.seed),
+                "pop_size_default": int(runtime_overrides.get("pop_size", optimization_config.pop_size)),
+                "n_gen_default": int(runtime_overrides.get("n_gen", optimization_config.n_gen)),
+                "seed_default": int(runtime_overrides.get("seed", optimization_config.seed)),
                 "eliminate_duplicates": bool(optimization_config.eliminate_duplicates),
                 "save_history": bool(optimization_config.save_history),
                 "use_history": bool(optimization_config.use_history),
@@ -145,7 +156,7 @@ def make_get_district_optimization_problem_statement_tool(
             "Если ограничения слишком жёсткие, пересмотрите constraints_template до запуска оптимизации.",
         ]
         problem_statement_text = _build_problem_statement_text(
-            target_id=int(resolved_target_id),
+            target_id=int(resolved_target_id) if resolved_target_id is not None else None,
             site_area=site_area,
             source=source,
             decision_variables=decision_variables,
@@ -155,7 +166,7 @@ def make_get_district_optimization_problem_statement_tool(
             change_examples=change_examples,
         )
         return {
-            "target_id": int(resolved_target_id),
+            "target_id": int(resolved_target_id) if resolved_target_id is not None else None,
             "site_area": site_area,
             "source": source,
             "decision_variables": decision_variables,
@@ -164,6 +175,7 @@ def make_get_district_optimization_problem_statement_tool(
             "objectives": objectives,
             "repair_rules": repair_rules,
             "tunable_parameters": json_mapping(tunable_parameters),
+            "runtime_overrides_active": json_mapping(runtime_overrides),
             "change_examples": change_examples,
             "problem_statement_text": problem_statement_text,
         }
@@ -186,23 +198,33 @@ def _resolve_site_area(
     return float(site_area_series.iloc[0])
 
 
-def _repair_rules(*, site_area: float) -> list[str]:
-    footprint_cap = 0.8 * float(site_area)
-    return [
+def _repair_rules(*, site_area: float | None) -> list[str]:
+    rules = [
         "Доли land_use нормализуются так, чтобы их сумма была равна 1.0.",
         "Если все доли land_use нулевые, сценарий принудительно становится residential=1.0.",
-        f"footprint_area ограничивается сверху значением 0.8 * site_area = {format_float(footprint_cap)}.",
         "l ограничивается снизу значением 1.0.",
         "mxi ограничивается диапазоном [0.0, 1.0].",
         "Доминирующая доля land_use определяет итоговый land_use квартала.",
         "Производные показатели build_floor_area, living_area, non_living_area, population, fsi и gsi пересчитываются автоматически.",
     ]
+    if site_area is not None:
+        footprint_cap = 0.8 * float(site_area)
+        rules.insert(
+            2,
+            f"footprint_area ограничивается сверху значением 0.8 * site_area = {format_float(footprint_cap)}.",
+        )
+    else:
+        rules.insert(
+            2,
+            "footprint_area ограничивается сверху значением 0.8 * site_area после выбора конкретного квартала.",
+        )
+    return rules
 
 
 def _build_problem_statement_text(
     *,
-    target_id: int,
-    site_area: float,
+    target_id: int | None,
+    site_area: float | None,
     source: str,
     decision_variables: list[dict[str, Any]],
     objectives: list[dict[str, Any]],
@@ -212,9 +234,9 @@ def _build_problem_statement_text(
 ) -> str:
     lines = [
         "Постановка задачи оптимизации:",
-        f" • target_id: {target_id}",
+        f" • target_id: {target_id if target_id is not None else 'не задан'}",
         f" • source: {source}",
-        f" • site_area: {format_float(site_area)}",
+        f" • site_area: {format_float(site_area) if site_area is not None else 'будет определена после выбора квартала'}",
         "",
         "Целевые функции:",
     ]
@@ -224,12 +246,15 @@ def _build_problem_statement_text(
         )
     lines.append("")
     lines.append("Переменные решения и диапазоны:")
-    for item in decision_variables:
-        min_value = item.get("min")
-        max_value = item.get("max")
-        lines.append(
-            f" • {item['name']} [{item['type']}]: min={min_value}, max={max_value}"
-        )
+    if decision_variables:
+        for item in decision_variables:
+            min_value = item.get("min")
+            max_value = item.get("max")
+            lines.append(
+                f" • {item['name']} [{item['type']}]: min={min_value}, max={max_value}"
+            )
+    else:
+        lines.append(" • Для точных диапазонов укажи target_id или сначала запусти оптимизацию квартала.")
     lines.append("")
     lines.append("Правила repair / нормализации:")
     for rule in repair_rules:

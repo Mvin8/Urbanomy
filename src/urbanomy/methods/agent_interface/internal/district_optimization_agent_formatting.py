@@ -5,7 +5,54 @@ from __future__ import annotations
 from typing import Any
 
 
-def short_response_from_tool(*, tool_name: str, tool_output: dict[str, Any]) -> str:
+def optimization_parameter_response(
+    *,
+    tool_output: dict[str, Any],
+    parameter_name: str,
+) -> str:
+    """Build a short direct answer for one algorithm parameter."""
+    algorithm = dict((tool_output.get("tunable_parameters") or {}).get("algorithm") or {})
+    values = {
+        "pop_size": algorithm.get("pop_size_default"),
+        "n_gen": algorithm.get("n_gen_default"),
+        "seed": algorithm.get("seed_default"),
+    }
+    descriptions = {
+        "pop_size": "размер популяции генетического алгоритма",
+        "n_gen": "число поколений оптимизации",
+        "seed": "seed генератора случайности",
+    }
+    value = values.get(parameter_name)
+    description = descriptions.get(parameter_name, "параметр алгоритма")
+    if value is None:
+        return f"Не удалось определить текущее значение `{parameter_name}`."
+    return f"`{parameter_name}` = {value}. Это {description}."
+
+
+def wants_detailed_problem_statement(user_request: str) -> bool:
+    """Return whether the user explicitly asks for the full optimization setup."""
+    text = str(user_request).lower().replace("ё", "е")
+    detail_markers = (
+        "все параметры",
+        "все настройки",
+        "полные параметры",
+        "полная постановка",
+        "подробно",
+        "подробнее",
+        "целиком",
+        "полностью",
+        "все ограничения",
+        "все переменные",
+    )
+    return any(marker in text for marker in detail_markers)
+
+
+def short_response_from_tool(
+    *,
+    tool_name: str,
+    tool_output: dict[str, Any],
+    user_request: str = "",
+) -> str:
     """Build a short user-facing response from a tool output payload."""
     if tool_name == "run_district_optimization":
         base = f"Оптимизация завершена. Найдено {format_solution_count(tool_output['n_solutions'])}."
@@ -35,8 +82,29 @@ def short_response_from_tool(*, tool_name: str, tool_output: dict[str, Any]) -> 
         text = str(tool_output.get("summary_text", "")).strip()
         return text or "Построен график Парето-фронта."
     if tool_name == "get_district_optimization_problem_statement":
-        text = str(tool_output.get("problem_statement_text", "")).strip()
-        return text or "Показана постановка задачи оптимизации."
+        if wants_detailed_problem_statement(user_request):
+            text = str(tool_output.get("problem_statement_text", "")).strip()
+            if text:
+                return text
+        algorithm = dict((tool_output.get("tunable_parameters") or {}).get("algorithm") or {})
+        variables = list(tool_output.get("decision_variables") or [])
+        variable_names = ", ".join(str(item.get("name")) for item in variables[:4] if item.get("name"))
+        target_id = tool_output.get("target_id")
+        parts = [
+            "Постановка задачи оптимизации готова.",
+            f"target_id={target_id}." if target_id is not None else "target_id пока не задан.",
+            f"Переменных: {len(variables)}.",
+        ]
+        if variable_names:
+            parts.append(f"Основные переменные: {variable_names}.")
+        if algorithm:
+            parts.append(
+                "Параметры алгоритма: "
+                f"pop_size={algorithm.get('pop_size_default')}, "
+                f"n_gen={algorithm.get('n_gen_default')}, "
+                f"seed={algorithm.get('seed_default')}."
+            )
+        return " ".join(parts)
     return "Запрос обработан."
 
 
@@ -95,7 +163,7 @@ def compact_tool_output(
             "objectives": tool_output.get("objectives"),
             "repair_rules": tool_output.get("repair_rules"),
             "tunable_parameters": tool_output.get("tunable_parameters"),
-            "problem_statement_text": tool_output.get("problem_statement_text"),
+            "runtime_overrides_active": tool_output.get("runtime_overrides_active"),
         }
     return tool_output
 

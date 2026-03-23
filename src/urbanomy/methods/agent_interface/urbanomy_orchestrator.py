@@ -9,6 +9,15 @@ import geopandas as gpd
 from langgraph.graph import END, START, StateGraph
 
 from .internal.agent_utils import invoke_structured_router
+from .internal.district_optimization_intents import (
+    looks_like_district_optimization_request,
+    normalize_text,
+)
+from .block_parameters_agent import (
+    BlockParametersAgent,
+    create_block_parameters_agent,
+    looks_like_block_parameters_request,
+)
 from .general_qa_agent import GeneralQaAgent, create_general_qa_agent
 from .models import (
     DistrictOptimizationConfig,
@@ -44,6 +53,9 @@ class UrbanomyOrchestratorState(TypedDict, total=False):
 class UrbanomyOrchestrator:
     """Top-level router over Urbanomy interface subagents."""
 
+    _LLM_ROUTE_CONFIDENCE_THRESHOLD = 0.65
+    _LLM_ROUTE_MIN_CONFIDENCE = 0.35
+
     def __init__(
         self,
         *,
@@ -65,8 +77,10 @@ class UrbanomyOrchestrator:
         self.checkpoint_namespace = str(checkpoint_namespace).strip() or "urbanomy_orchestrator_v2"
         self._visualization_agent: VisualizationAgent | None = None
         self._district_optimization_agent: Any | None = None
+        self._block_parameters_agent: BlockParametersAgent | None = None
         self._general_qa_agent: GeneralQaAgent | None = None
         self._thread_optimization_sessions: dict[str, Any] = {}
+        self._thread_algorithm_overrides: dict[str, dict[str, int]] = {}
         self._thread_runtime_outputs: dict[str, dict[str, Any]] = {}
         self.graph = self._build_graph()
 
@@ -127,6 +141,7 @@ class UrbanomyOrchestrator:
             "latest_optimization_summary": state.get("latest_optimization_summary"),
             "latest_solution_number": state.get("latest_solution_number"),
             "has_optimization_session": resolved_thread_id in self._thread_optimization_sessions,
+            "algorithm_overrides": self._thread_algorithm_overrides.get(resolved_thread_id),
         }
 
     def clear_thread_memory(self, thread_id: str | None = None) -> None:
@@ -145,6 +160,7 @@ class UrbanomyOrchestrator:
                 as_node="finalize",
             )
         self._thread_optimization_sessions.pop(resolved_thread_id, None)
+        self._thread_algorithm_overrides.pop(resolved_thread_id, None)
         self._thread_runtime_outputs.pop(resolved_thread_id, None)
 
     def reset_memory(self, thread_id: str | None = None) -> None:
@@ -156,6 +172,7 @@ class UrbanomyOrchestrator:
         graph.add_node("router", self._router_node)
         graph.add_node("visualization", self._visualization_node)
         graph.add_node("district_optimization", self._district_optimization_node)
+        graph.add_node("block_parameters", self._block_parameters_node)
         graph.add_node("general_qa", self._general_qa_node)
         graph.add_node("unsupported", self._unsupported_node)
         graph.add_node("finalize", self._finalize_node)
@@ -166,12 +183,14 @@ class UrbanomyOrchestrator:
             {
                 "visualization": "visualization",
                 "district_optimization": "district_optimization",
+                "block_parameters": "block_parameters",
                 "general_qa": "general_qa",
                 "unsupported": "unsupported",
             },
         )
         graph.add_edge("visualization", "finalize")
         graph.add_edge("district_optimization", "finalize")
+        graph.add_edge("block_parameters", "finalize")
         graph.add_edge("general_qa", "finalize")
         graph.add_edge("unsupported", "finalize")
         graph.add_edge("finalize", END)
@@ -179,24 +198,22 @@ class UrbanomyOrchestrator:
 
     def _router_node(self, state: UrbanomyOrchestratorState) -> dict[str, Any]:
         user_request = state["user_request"]
-        heuristic = self._heuristic_route(user_request)
-        if heuristic is not None:
-            return {
-                "route": heuristic.route,
-                "reasoning": heuristic.reasoning,
-            }
-
         decision = invoke_structured_router(
             llm=self.llm,
             schema=self._route_decision_schema(),
             system_prompt=ORCHESTRATOR_ROUTER_SYSTEM_PROMPT,
             user_request=user_request,
         )
+        heuristic = self._heuristic_route(user_request)
         if decision is not None:
-            return {
-                "route": str(decision.route),
-                "reasoning": str(decision.reasoning),
-            }
+            if self._should_accept_llm_route(decision):
+                return self._route_update_from_decision(decision)
+            if heuristic is not None:
+                return self._route_update_from_decision(heuristic)
+            if float(decision.confidence) >= self._LLM_ROUTE_MIN_CONFIDENCE:
+                return self._route_update_from_decision(decision)
+        if heuristic is not None:
+            return self._route_update_from_decision(heuristic)
 
         return {
             "route": "general_qa",
@@ -204,7 +221,7 @@ class UrbanomyOrchestrator:
         }
 
     def _heuristic_route(self, user_request: str) -> UrbanomyOrchestratorRouteDecision | None:
-        text = user_request.lower()
+        text = normalize_text(user_request)
         stripped = text.strip()
         visualization_markers = (
             "покажи",
@@ -240,34 +257,11 @@ class UrbanomyOrchestrator:
             "выдели квартал",
             "покажи квартал",
         )
-        optimization_markers = (
-            "оптимиз",
-            "pareto",
-            "парето",
-            "nsga",
-            "оптимизац",
-            "решений",
-            "решение ",
-            "сценари",
-            "инвестицион",
-            "экономическ",
-            "эффективност",
-            "npv",
-            "irr",
-            "pi",
-        )
-        optimization_graph_markers = ("график", "диаграмм", "scatter", "фронт", "plot")
-        optimization_consult_markers = (
-            "постановк",
-            "ограничени",
-            "целевая функц",
-            "переменн",
-            "что изменить",
-            "что поменять",
-            "как настроить",
-        )
         general_qa_markers = (
             "что такое",
+            "как работает",
+            "что делает",
+            "как устро",
             "что ты умеешь",
             "что умеешь",
             "какие инструменты",
@@ -288,26 +282,32 @@ class UrbanomyOrchestrator:
                 *visualization_markers,
                 *land_value_markers,
                 *target_block_markers,
-                *optimization_markers,
             )
-        )
+        ) and not looks_like_district_optimization_request(text)
 
-        if any(marker in text for marker in optimization_markers) and (
-            has_target_id
-            or "решени" in text
-            or "pareto" in text
-            or "парето" in text
-            or any(marker in text for marker in optimization_graph_markers)
-            or any(marker in text for marker in optimization_consult_markers)
-        ):
+        if any(marker in text for marker in general_qa_markers) and not has_target_id:
+            return UrbanomyOrchestratorRouteDecision(
+                route="general_qa",
+                reasoning="Запрос относится к объяснению работы системы или её веток.",
+                confidence=0.88,
+            )
+        if looks_like_district_optimization_request(text):
             return UrbanomyOrchestratorRouteDecision(
                 route="district_optimization",
-                reasoning="Запрос относится к оптимизации квартала или анализу Pareto-решений.",
+                reasoning="Запрос относится к optimization-домену: запуску, анализу решений или настройкам оптимизатора.",
+                confidence=0.92,
+            )
+        if self._looks_like_block_parameters_request(user_request):
+            return UrbanomyOrchestratorRouteDecision(
+                route="block_parameters",
+                reasoning="Запрос относится к получению параметров квартала по id.",
+                confidence=0.9,
             )
         if any(marker in text for marker in target_block_markers) and has_target_id:
             return UrbanomyOrchestratorRouteDecision(
                 route="visualization",
                 reasoning="Запрос относится к визуализации квартала по target_id.",
+                confidence=0.88,
             )
         if any(marker in text for marker in visualization_markers) and any(
             marker in text for marker in land_value_markers
@@ -315,23 +315,41 @@ class UrbanomyOrchestrator:
             return UrbanomyOrchestratorRouteDecision(
                 route="visualization",
                 reasoning="Запрос относится к визуализации стоимости земли.",
+                confidence=0.84,
             )
         if any(marker in text for marker in general_qa_markers):
             return UrbanomyOrchestratorRouteDecision(
                 route="general_qa",
                 reasoning="Запрос относится к разговорной или справочной ветке.",
+                confidence=0.86,
             )
         if is_arithmetic_expression or is_short_general_query:
             return UrbanomyOrchestratorRouteDecision(
                 route="general_qa",
                 reasoning="Короткий общий запрос направлен в разговорную ветку.",
+                confidence=0.9,
             )
         return None
+
+    @classmethod
+    def _should_accept_llm_route(cls, decision: UrbanomyOrchestratorRouteDecision) -> bool:
+        return float(decision.confidence) >= cls._LLM_ROUTE_CONFIDENCE_THRESHOLD
+
+    @staticmethod
+    def _route_update_from_decision(
+        decision: UrbanomyOrchestratorRouteDecision,
+    ) -> dict[str, Any]:
+        return {
+            "route": str(decision.route),
+            "reasoning": str(decision.reasoning),
+        }
 
     def _route_after_router(self, state: UrbanomyOrchestratorState) -> str:
         route = state["route"]
         if route == "district_optimization" and self.district_optimization_config is not None:
             return "district_optimization"
+        if route == "block_parameters":
+            return "block_parameters"
         if route in {"visualization", "target_block_visualization", "land_value_visualization"}:
             return "visualization"
         if route == "general_qa":
@@ -344,6 +362,7 @@ class UrbanomyOrchestrator:
             state["thread_id"],
             visualization_result=result,
             target_block_visualization_result=self._build_legacy_target_block_result(result),
+            block_parameters_result=None,
             district_optimization_result=None,
         )
         return {
@@ -355,19 +374,30 @@ class UrbanomyOrchestrator:
         thread_id = state["thread_id"]
         agent = self._get_district_optimization_agent()
         session = self._thread_optimization_sessions.get(thread_id)
+        overrides = self._thread_algorithm_overrides.get(thread_id)
         if session is None:
             agent.session_store.pop("latest_district_optimization_session", None)
         else:
             agent.session_store["latest_district_optimization_session"] = session
+        if overrides:
+            agent.session_store["algorithm_overrides"] = dict(overrides)
+        else:
+            agent.session_store.pop("algorithm_overrides", None)
         result = agent.invoke(state["user_request"])
         latest_session = agent.session_store.get("latest_district_optimization_session")
         if latest_session is not None:
             self._thread_optimization_sessions[thread_id] = latest_session
+        latest_overrides = dict(agent.session_store.get("algorithm_overrides") or {})
+        if latest_overrides:
+            self._thread_algorithm_overrides[thread_id] = latest_overrides
+        else:
+            self._thread_algorithm_overrides.pop(thread_id, None)
         summary = self._build_latest_optimization_summary(thread_id=thread_id)
         self._set_runtime_output(
             thread_id,
             visualization_result=None,
             target_block_visualization_result=None,
+            block_parameters_result=None,
             district_optimization_result=result,
         )
         update: dict[str, Any] = {
@@ -390,6 +420,7 @@ class UrbanomyOrchestrator:
             state["thread_id"],
             visualization_result=None,
             target_block_visualization_result=None,
+            block_parameters_result=None,
             district_optimization_result=None,
         )
         return {
@@ -397,18 +428,33 @@ class UrbanomyOrchestrator:
             "latest_response": response,
         }
 
+    def _block_parameters_node(self, state: UrbanomyOrchestratorState) -> dict[str, Any]:
+        result = self._get_block_parameters_agent().invoke(state["user_request"])
+        self._set_runtime_output(
+            state["thread_id"],
+            visualization_result=None,
+            target_block_visualization_result=None,
+            block_parameters_result=result,
+            district_optimization_result=None,
+        )
+        return {
+            "latest_route": "block_parameters",
+            "latest_response": str(result.get("response", "Параметры квартала получены.")).strip(),
+        }
+
     def _unsupported_node(self, state: UrbanomyOrchestratorState) -> dict[str, Any]:
         self._set_runtime_output(
             state["thread_id"],
             visualization_result=None,
             target_block_visualization_result=None,
+            block_parameters_result=None,
             district_optimization_result=None,
         )
         return {
             "latest_route": "unsupported",
             "latest_response": (
                 "Пока orchestrator поддерживает единый агент визуализации, "
-                "district optimization и разговорную справку "
+                "получение параметров квартала по id, district optimization и разговорную справку "
                 "о своих возможностях."
             ),
         }
@@ -459,6 +505,13 @@ class UrbanomyOrchestrator:
             )
         return self._general_qa_agent
 
+    def _get_block_parameters_agent(self) -> BlockParametersAgent:
+        if self._block_parameters_agent is None:
+            self._block_parameters_agent = create_block_parameters_agent(
+                baseline_blocks=self.baseline_blocks,
+            )
+        return self._block_parameters_agent
+
     @staticmethod
     def _default_visualization_response(route: str) -> str:
         if route == "plot_target_block_map":
@@ -489,6 +542,7 @@ class UrbanomyOrchestrator:
     def _build_general_qa_context(self, state: UrbanomyOrchestratorState) -> dict[str, str]:
         return {
             "capabilities": self._build_capabilities_text(),
+            "tool_catalog": self._build_tool_catalog_text(),
             "latest_optimization_context": self._build_latest_optimization_context(state),
             "latest_response": str(state.get("latest_response", "")).strip(),
             "recent_history": self._format_recent_history(state),
@@ -497,6 +551,7 @@ class UrbanomyOrchestrator:
     def _build_capabilities_text(self) -> str:
         lines = [
             "- единый агент визуализации: полная стоимость земли, стоимость за сотку и выделение квартала по target_id",
+            "- получение параметров квартала по id или target_id из baseline-данных",
             "- ответы на общие вопросы и объяснение возможностей orchestrator",
         ]
         if self.district_optimization_config is not None:
@@ -511,6 +566,26 @@ class UrbanomyOrchestrator:
                     "- построение графика Парето-фронта",
                 ]
             )
+        return "\n".join(lines)
+
+    def _build_tool_catalog_text(self) -> str:
+        lines: list[str] = []
+        visualization_agent = self._get_visualization_agent()
+        for tool in (
+            visualization_agent._plot_total_tool,
+            visualization_agent._plot_unit_tool,
+            visualization_agent._plot_target_block_tool,
+        ):
+            description = str(getattr(tool, "description", "")).strip().split("\n\n", 1)[0]
+            lines.append(f"- {tool.name}: {description}")
+        lines.append(
+            "- block_parameters: Возвращает baseline-параметры квартала по id или target_id без построения карты."
+        )
+        if self.district_optimization_config is not None:
+            district_agent = self._get_district_optimization_agent()
+            for tool in district_agent._tools:
+                description = str(getattr(tool, "description", "")).strip().split("\n\n", 1)[0]
+                lines.append(f"- {tool.name}: {description}")
         return "\n".join(lines)
 
     def _build_latest_optimization_context(self, state: UrbanomyOrchestratorState) -> str:
@@ -584,8 +659,13 @@ class UrbanomyOrchestrator:
             response=response,
             visualization_result=runtime_output.get("visualization_result"),
             target_block_visualization_result=runtime_output.get("target_block_visualization_result"),
+            block_parameters_result=runtime_output.get("block_parameters_result"),
             district_optimization_result=runtime_output.get("district_optimization_result"),
         )
+
+    @staticmethod
+    def _looks_like_block_parameters_request(user_request: str) -> bool:
+        return looks_like_block_parameters_request(user_request)
 
     def _set_runtime_output(
         self,
@@ -593,11 +673,13 @@ class UrbanomyOrchestrator:
         *,
         visualization_result: Any,
         target_block_visualization_result: Any,
+        block_parameters_result: Any,
         district_optimization_result: Any,
     ) -> None:
         self._thread_runtime_outputs[thread_id] = {
             "visualization_result": visualization_result,
             "target_block_visualization_result": target_block_visualization_result,
+            "block_parameters_result": block_parameters_result,
             "district_optimization_result": district_optimization_result,
         }
 

@@ -2,7 +2,20 @@
 
 from __future__ import annotations
 
+import os
 from importlib import import_module
+
+# The agent interface eagerly imports plotting-heavy modules during package
+# initialization. On macOS this must happen with a non-interactive backend,
+# otherwise worker-thread rendering inside the chat server crashes.
+os.environ.setdefault("MPLBACKEND", "Agg")
+try:
+    import matplotlib
+
+    matplotlib.use(os.environ["MPLBACKEND"])
+except Exception:
+    # Defer to Matplotlib defaults if it is unavailable at import time.
+    pass
 
 from .models import (
     DistrictOptimizationConfig,
@@ -32,6 +45,7 @@ __all__ = [
     "UrbanomyOrchestratorRouteDecision",
     "VisualizationResult",
     "VisualizationRouteDecision",
+    "create_urbanomy_orchestrator",
 ]
 
 
@@ -48,6 +62,13 @@ def _load_optional(module_name: str, names: list[str]) -> None:
     for name in names:
         globals()[name] = getattr(module, name)
     __all__.extend(names)
+
+
+def create_urbanomy_orchestrator(*args, **kwargs):
+    """Lazily import and construct the top-level Urbanomy orchestrator."""
+    module = import_module(".urbanomy_orchestrator", package=__name__)
+    factory = getattr(module, "create_urbanomy_orchestrator")
+    return factory(*args, **kwargs)
 
 
 _load_optional(
@@ -98,7 +119,6 @@ _load_optional(
     ".urbanomy_orchestrator",
     [
         "UrbanomyOrchestrator",
-        "create_urbanomy_orchestrator",
     ],
 )
 _load_optional(

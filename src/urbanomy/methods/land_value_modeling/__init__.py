@@ -16,6 +16,7 @@ from .constants import (
 from .land_data_preparation import LandDataPreparator
 from .land_price_estimation import LandPriceEstimator, transfer_baseline_prices
 from .land_price_visualization import plot_land_price_maps
+from .pareto_front_dataframe import build_pareto_front_dataframe
 from .scenario_modification import ScenarioTEPModifier, plot_scenario_impact
 
 __all__ = [
@@ -29,6 +30,7 @@ __all__ = [
     "LandPriceEstimator",
     "transfer_baseline_prices",
     "plot_land_price_maps",
+    "build_pareto_front_dataframe",
     "ScenarioTEPModifier",
     "plot_scenario_impact",
 ]
@@ -45,7 +47,6 @@ try:
         ParetoMultiAgentOrchestrator,
         WinnerScenarioQAResult,
         ask_winner_scenario_question,
-        build_pareto_front_dataframe,
         collect_pareto_scenarios,
         run_pareto_vote,
         select_best_pareto_scenario,
@@ -55,7 +56,6 @@ except ImportError:
     ParetoMultiAgentOrchestrator = None
     WinnerScenarioQAResult = None
     ask_winner_scenario_question = None
-    build_pareto_front_dataframe = None
     collect_pareto_scenarios = None
     run_pareto_vote = None
     select_best_pareto_scenario = None
@@ -66,7 +66,6 @@ else:
             "ParetoMultiAgentOrchestrator",
             "WinnerScenarioQAResult",
             "ask_winner_scenario_question",
-            "build_pareto_front_dataframe",
             "collect_pareto_scenarios",
             "run_pareto_vote",
             "select_best_pareto_scenario",

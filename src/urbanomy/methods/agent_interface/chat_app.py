@@ -17,6 +17,11 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+# The chat server renders figures from worker threads, which is incompatible
+# with the macOS GUI backend. Default to a non-interactive backend unless the
+# user explicitly set another one before launch.
+os.environ.setdefault("MPLBACKEND", "Agg")
+
 
 HTML_PAGE = """<!doctype html>
 <html lang="ru">

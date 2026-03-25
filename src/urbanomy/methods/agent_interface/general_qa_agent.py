@@ -7,8 +7,19 @@ from typing import Any, Callable
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.tools import tool
 
-from .internal.agent_utils import build_tool_agent, extract_last_ai_message_text
-from .prompts import GENERAL_QA_AGENT_SYSTEM_PROMPT, GENERAL_QA_DIRECT_SYSTEM_PROMPT
+from .internal.common.agent_utils import build_tool_agent, extract_last_ai_message_text
+from .internal.common.domain_contracts import ToolDescriptor, describe_tool
+from .internal.block_parameters.glossary import (
+    detect_block_parameter_term,
+    looks_like_block_parameter_definition_request,
+)
+from .internal.general_qa.metadata import GENERAL_QA_CAPABILITY_LINES
+from .prompts import (
+    GENERAL_QA_AGENT_SYSTEM_PROMPT,
+    GENERAL_QA_CONTEXT_SYSTEM_PROMPT,
+    GENERAL_QA_DIRECT_SYSTEM_PROMPT,
+)
+from .tools.get_block_parameter_definition import make_get_block_parameter_definition_tool
 
 
 class GeneralQaAgent:
@@ -27,9 +38,15 @@ class GeneralQaAgent:
         self._active_context: dict[str, str] = {}
         self._context_tool = self._make_context_tool()
         self._tool_catalog_tool = self._make_tool_catalog_tool()
+        self._parameter_definition_tool = make_get_block_parameter_definition_tool()
+        self._tools = [
+            self._context_tool,
+            self._tool_catalog_tool,
+            self._parameter_definition_tool,
+        ]
         self.agent = build_tool_agent(
             llm=self.llm,
-            tools=[self._context_tool, self._tool_catalog_tool],
+            tools=self._tools,
             system_prompt=GENERAL_QA_AGENT_SYSTEM_PROMPT,
         )
 
@@ -39,6 +56,9 @@ class GeneralQaAgent:
         if not text:
             raise ValueError("user_request cannot be empty")
         self._active_context = dict(context or self._context_provider())
+        glossary_response = self._maybe_answer_block_parameter_definition(text)
+        if glossary_response:
+            return glossary_response
         if self._should_use_tool_agent(text):
             response = self._invoke_with_context_tool(text)
             if response:
@@ -63,8 +83,10 @@ class GeneralQaAgent:
 
     def _invoke_direct(self, user_request: str) -> str:
         """Invoke the base chat model directly for ordinary questions."""
-        prompt = GENERAL_QA_DIRECT_SYSTEM_PROMPT
         context_block = self._build_inline_context(user_request)
+        prompt = (
+            GENERAL_QA_CONTEXT_SYSTEM_PROMPT if context_block else GENERAL_QA_DIRECT_SYSTEM_PROMPT
+        )
         if context_block:
             prompt = f"{prompt}\n\n{context_block}"
         try:
@@ -91,6 +113,15 @@ class GeneralQaAgent:
 
     def __call__(self, user_request: str, *, context: dict[str, str] | None = None) -> str:
         return self.invoke(user_request, context=context)
+
+    @staticmethod
+    def capability_lines() -> list[str]:
+        """Return user-facing capabilities exposed by this domain agent."""
+        return list(GENERAL_QA_CAPABILITY_LINES)
+
+    def tool_descriptors(self) -> list[ToolDescriptor]:
+        """Return compact user-facing descriptions of domain tools."""
+        return [describe_tool(tool) for tool in self._tools]
 
     def _make_context_tool(self):
         context_provider = self._context_provider
@@ -156,6 +187,18 @@ class GeneralQaAgent:
 
         return get_orchestrator_tool_catalog
 
+    def _maybe_answer_block_parameter_definition(self, user_request: str) -> str:
+        if not looks_like_block_parameter_definition_request(user_request):
+            return ""
+        term = detect_block_parameter_term(user_request)
+        if not term:
+            return ""
+        try:
+            tool_output = self._parameter_definition_tool.invoke({"term": term})
+        except Exception:
+            return ""
+        return str(tool_output.get("definition_text", "")).strip()
+
     def _build_inline_context(self, user_request: str) -> str:
         """Build an inline context block only when the question needs runtime context."""
         if not self._should_use_tool_agent(user_request):
@@ -218,6 +261,9 @@ class GeneralQaAgent:
             "визуализац",
             "pareto",
             "парето",
+            "fsi",
+            "gsi",
+            "mxi",
         )
         return cls._should_use_context_tool(user_request) or any(marker in text for marker in tool_markers)
 

@@ -1,4 +1,4 @@
-from urbanomy.methods.agent_interface.internal.district_optimization_agent_formatting import (
+from urbanomy.methods.agent_interface.internal.district_optimization.formatting import (
     short_response_from_tool,
 )
 

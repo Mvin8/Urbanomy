@@ -8,10 +8,12 @@ from typing import Any, TypedDict
 import geopandas as gpd
 from langgraph.graph import END, START, StateGraph
 
-from .internal.agent_utils import invoke_structured_router
-from .internal.district_optimization_intents import (
+from .internal.common.agent_utils import invoke_structured_router
+from .internal.common.domain_contracts import ToolDescriptor, format_tool_catalog
+from .internal.common.request_parsing import normalize_text
+from .internal.block_parameters.glossary import looks_like_block_parameter_definition_request
+from .internal.district_optimization.intents import (
     looks_like_district_optimization_request,
-    normalize_text,
 )
 from .block_parameters_agent import (
     BlockParametersAgent,
@@ -144,6 +146,34 @@ class UrbanomyOrchestrator:
             "algorithm_overrides": self._thread_algorithm_overrides.get(resolved_thread_id),
         }
 
+    def get_capabilities(self) -> list[str]:
+        """Return user-facing capabilities currently available in this runtime."""
+        lines: list[str] = []
+        lines.extend(self._get_visualization_agent().capability_lines())
+        lines.extend(self._get_block_parameters_agent().capability_lines())
+        lines.extend(GeneralQaAgent.capability_lines())
+        if self.district_optimization_config is not None:
+            lines.extend(self._get_district_optimization_agent().capability_lines())
+        return lines
+
+    def get_capabilities_text(self) -> str:
+        """Return a formatted capabilities block for notebook/chat display."""
+        return "\n".join(self.get_capabilities())
+
+    def get_tool_catalog(self) -> list[ToolDescriptor]:
+        """Return structured descriptors of tools available in this runtime."""
+        descriptors: list[ToolDescriptor] = []
+        descriptors.extend(self._get_visualization_agent().tool_descriptors())
+        descriptors.extend(self._get_block_parameters_agent().tool_descriptors())
+        descriptors.extend(self._get_general_qa_agent().tool_descriptors())
+        if self.district_optimization_config is not None:
+            descriptors.extend(self._get_district_optimization_agent().tool_descriptors())
+        return descriptors
+
+    def get_tool_catalog_text(self) -> str:
+        """Return a formatted tool catalog for notebook/chat display."""
+        return format_tool_catalog(self.get_tool_catalog())
+
     def clear_thread_memory(self, thread_id: str | None = None) -> None:
         """Clear persisted memory for one thread in the in-memory runtime stores."""
         resolved_thread_id = self._resolve_thread_id(thread_id)
@@ -198,6 +228,11 @@ class UrbanomyOrchestrator:
 
     def _router_node(self, state: UrbanomyOrchestratorState) -> dict[str, Any]:
         user_request = state["user_request"]
+        if looks_like_block_parameter_definition_request(user_request):
+            return {
+                "route": "general_qa",
+                "reasoning": "Запрос объясняет термин параметра квартала, поэтому направлен в general_qa.",
+            }
         decision = invoke_structured_router(
             llm=self.llm,
             schema=self._route_decision_schema(),
@@ -443,6 +478,7 @@ class UrbanomyOrchestrator:
         }
 
     def _unsupported_node(self, state: UrbanomyOrchestratorState) -> dict[str, Any]:
+        capabilities = self.get_capabilities_text()
         self._set_runtime_output(
             state["thread_id"],
             visualization_result=None,
@@ -453,9 +489,8 @@ class UrbanomyOrchestrator:
         return {
             "latest_route": "unsupported",
             "latest_response": (
-                "Пока orchestrator поддерживает единый агент визуализации, "
-                "получение параметров квартала по id, district optimization и разговорную справку "
-                "о своих возможностях."
+                "Этот запрос не относится к доступным возможностям orchestrator.\n\n"
+                f"Сейчас доступны:\n{capabilities}"
             ),
         }
 
@@ -541,52 +576,18 @@ class UrbanomyOrchestrator:
 
     def _build_general_qa_context(self, state: UrbanomyOrchestratorState) -> dict[str, str]:
         return {
-            "capabilities": self._build_capabilities_text(),
-            "tool_catalog": self._build_tool_catalog_text(),
+            "capabilities": self.get_capabilities_text(),
+            "tool_catalog": self.get_tool_catalog_text(),
             "latest_optimization_context": self._build_latest_optimization_context(state),
             "latest_response": str(state.get("latest_response", "")).strip(),
             "recent_history": self._format_recent_history(state),
         }
 
     def _build_capabilities_text(self) -> str:
-        lines = [
-            "- единый агент визуализации: полная стоимость земли, стоимость за сотку и выделение квартала по target_id",
-            "- получение параметров квартала по id или target_id из baseline-данных",
-            "- ответы на общие вопросы и объяснение возможностей orchestrator",
-        ]
-        if self.district_optimization_config is not None:
-            lines.extend(
-                [
-                    "- оптимизация квартала по target_id",
-                    "- консультации по постановке задачи оптимизации, ограничениям и переменным",
-                    "- вывод количества найденных оптимальных решений",
-                    "- визуализация конкретного решения из Pareto-front",
-                    "- вывод параметров квартала для конкретного решения",
-                    "- расчёт инвестиционных метрик для решения",
-                    "- построение графика Парето-фронта",
-                ]
-            )
-        return "\n".join(lines)
+        return self.get_capabilities_text()
 
     def _build_tool_catalog_text(self) -> str:
-        lines: list[str] = []
-        visualization_agent = self._get_visualization_agent()
-        for tool in (
-            visualization_agent._plot_total_tool,
-            visualization_agent._plot_unit_tool,
-            visualization_agent._plot_target_block_tool,
-        ):
-            description = str(getattr(tool, "description", "")).strip().split("\n\n", 1)[0]
-            lines.append(f"- {tool.name}: {description}")
-        lines.append(
-            "- block_parameters: Возвращает baseline-параметры квартала по id или target_id без построения карты."
-        )
-        if self.district_optimization_config is not None:
-            district_agent = self._get_district_optimization_agent()
-            for tool in district_agent._tools:
-                description = str(getattr(tool, "description", "")).strip().split("\n\n", 1)[0]
-                lines.append(f"- {tool.name}: {description}")
-        return "\n".join(lines)
+        return self.get_tool_catalog_text()
 
     def _build_latest_optimization_context(self, state: UrbanomyOrchestratorState) -> str:
         summary = state.get("latest_optimization_summary")

@@ -1,19 +1,20 @@
 """Unified tool-calling agent for Urbanomy visualization requests."""
 
 from __future__ import annotations
-
-import re
 from typing import Any, TypedDict
 
 import geopandas as gpd
 from langchain_core.messages import HumanMessage
 from langgraph.graph import END, START, StateGraph
 
-from .internal.agent_utils import (
+from .internal.common.agent_utils import (
     build_tool_agent,
     extract_last_ai_message_text,
     invoke_structured_router,
 )
+from .internal.common.domain_contracts import ToolDescriptor, describe_tool
+from .internal.common.request_parsing import extract_target_id
+from .internal.visualization.metadata import VISUALIZATION_CAPABILITY_LINES
 from .models import VisualizationResult, VisualizationRouteDecision
 from .prompts import VISUALIZATION_AGENT_PROMPT, VISUALIZATION_ROUTER_SYSTEM_PROMPT
 from .tools import (
@@ -130,6 +131,23 @@ class VisualizationAgent:
     def __call__(self, user_request: str) -> VisualizationResult:
         return self.invoke(user_request)
 
+    def available_tools(self) -> tuple[Any, ...]:
+        """Return tool instances owned by the visualization domain."""
+        return (
+            self._plot_total_tool,
+            self._plot_unit_tool,
+            self._plot_target_block_tool,
+        )
+
+    def tool_descriptors(self) -> list[ToolDescriptor]:
+        """Return compact user-facing descriptions of domain tools."""
+        return [describe_tool(tool) for tool in self.available_tools()]
+
+    @staticmethod
+    def capability_lines() -> list[str]:
+        """Return user-facing capabilities exposed by this domain agent."""
+        return list(VISUALIZATION_CAPABILITY_LINES)
+
     def _build_graph(self):
         graph = StateGraph(VisualizationState)
         graph.add_node("router", self._router_node)
@@ -197,7 +215,7 @@ class VisualizationAgent:
             "выдели квартал",
             "покажи квартал",
         )
-        target_id = self._extract_target_id(user_request)
+        target_id = extract_target_id(user_request)
 
         if any(marker in text for marker in target_markers) and target_id is not None:
             return VisualizationRouteDecision(
@@ -241,7 +259,7 @@ class VisualizationAgent:
     ) -> VisualizationRouteDecision:
         if decision.route != "plot_target_block_map" or decision.target_id is not None:
             return decision
-        target_id = self._extract_target_id(user_request)
+        target_id = extract_target_id(user_request)
         if target_id is not None:
             return decision.model_copy(
                 update={
@@ -337,21 +355,6 @@ class VisualizationAgent:
                 "tool_payload": artifact.tool_payload() if artifact is not None else {},
             }
         }
-
-    @staticmethod
-    def _extract_target_id(user_request: str) -> int | None:
-        patterns = (
-            r"target_id\s*[:=]?\s*(\d+)",
-            r"\bid\s*[:=]?\s*(\d+)\b",
-            r"\bквартал(?:а|у|ом)?\s*(?:с\s*)?(?:id\s*)?[:=]?\s*(\d+)\b",
-            r"\bблок(?:а|у|ом)?\s*(?:с\s*)?(?:id\s*)?[:=]?\s*(\d+)\b",
-        )
-        for pattern in patterns:
-            match = re.search(pattern, user_request, flags=re.IGNORECASE)
-            if match:
-                return int(match.group(1))
-        return None
-
 
 def create_visualization_agent(
     *,

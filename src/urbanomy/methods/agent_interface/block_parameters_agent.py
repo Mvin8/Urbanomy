@@ -6,31 +6,17 @@ from typing import Any
 
 import geopandas as gpd
 
-from .internal.district_optimization_intents import extract_target_id, normalize_text
-from .tools.internal.district_optimization_formatting import format_float, json_value
-
-PREFERRED_BLOCK_PARAMETER_ORDER = (
-    "id",
-    "site_area",
-    "land_use",
-    "land_value",
-    "land_value_per_100m2",
-    "build_floor_area",
-    "footprint_area",
-    "living_area",
-    "non_living_area",
-    "population",
-    "fsi",
-    "gsi",
-    "mxi",
-    "residential",
-    "business",
-    "recreation",
-    "industrial",
-    "transport",
-    "special",
-    "agriculture",
+from .internal.block_parameters.logic import (
+    build_block_parameters_response,
+    extract_requested_parameters,
+    serialize_block_row,
 )
+from .internal.block_parameters.metadata import (
+    BLOCK_PARAMETERS_CAPABILITY_LINES,
+    BLOCK_PARAMETERS_TOOL_DESCRIPTORS,
+)
+from .internal.common.domain_contracts import ToolDescriptor
+from .internal.common.request_parsing import extract_target_id, normalize_text
 
 
 def looks_like_block_parameters_request(user_request: str) -> bool:
@@ -73,6 +59,7 @@ class BlockParametersAgent:
         text = str(user_request).strip()
         if not text:
             raise ValueError("user_request cannot be empty")
+        requested_parameters = self._extract_requested_parameters(text)
         target_id = extract_target_id(text)
         if target_id is None:
             return {
@@ -98,6 +85,12 @@ class BlockParametersAgent:
             }
         row = matches.iloc[0]
         parameters = self._serialize_row(row)
+        if requested_parameters:
+            filtered_parameters = {
+                key: value for key, value in parameters.items() if key in requested_parameters
+            }
+            if filtered_parameters:
+                parameters = filtered_parameters
         return {
             "status": "ok",
             "response": self._build_response(target_id=target_id, parameters=parameters),
@@ -115,38 +108,25 @@ class BlockParametersAgent:
         return self.invoke(user_request)
 
     @staticmethod
+    def capability_lines() -> list[str]:
+        """Return user-facing capabilities exposed by this domain agent."""
+        return list(BLOCK_PARAMETERS_CAPABILITY_LINES)
+
+    @staticmethod
+    def tool_descriptors() -> list[ToolDescriptor]:
+        """Return a synthetic tool descriptor for catalog rendering."""
+        return list(BLOCK_PARAMETERS_TOOL_DESCRIPTORS)
+
+    @staticmethod
     def _build_response(*, target_id: int, parameters: dict[str, Any]) -> str:
-        lines = [f"Параметры квартала id={target_id}:"]
-        for key, value in parameters.items():
-            if isinstance(value, float):
-                value_text = format_float(value)
-            else:
-                value_text = str(value)
-            lines.append(f" • {key}: {value_text}")
-        return "\n".join(lines)
+        return build_block_parameters_response(target_id=target_id, parameters=parameters)
+
+    @staticmethod
+    def _extract_requested_parameters(user_request: str) -> list[str]:
+        return extract_requested_parameters(user_request)
 
     def _serialize_row(self, row: Any) -> dict[str, Any]:
-        preferred: dict[str, Any] = {}
-        remaining: dict[str, Any] = {}
-        ordered_columns = [col for col in PREFERRED_BLOCK_PARAMETER_ORDER if col in row.index]
-        other_columns = [
-            str(col)
-            for col in row.index
-            if str(col) not in ordered_columns and str(col).lower() != "geometry"
-        ]
-        for column in ordered_columns + sorted(other_columns):
-            if str(column).lower() == "geometry":
-                continue
-            value = json_value(row[column])
-            if value is None:
-                continue
-            if isinstance(value, str) and not value.strip():
-                continue
-            if column in ordered_columns:
-                preferred[str(column)] = value
-            else:
-                remaining[str(column)] = value
-        return {**preferred, **remaining}
+        return serialize_block_row(row)
 
 
 def create_block_parameters_agent(

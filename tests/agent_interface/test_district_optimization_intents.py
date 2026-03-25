@@ -1,4 +1,4 @@
-from urbanomy.methods.agent_interface.internal.district_optimization_intents import (
+from urbanomy.methods.agent_interface.internal.district_optimization.intents import (
     looks_like_district_optimization_request,
     parse_district_optimization_intent,
 )
@@ -40,6 +40,12 @@ def test_problem_statement_consultation_request():
     intent = parse_district_optimization_intent("Какие настройки оптимизатора есть?")
 
     assert intent.kind == "problem_statement"
+
+
+def test_constraints_request_is_not_mapped_to_problem_statement():
+    intent = parse_district_optimization_intent("Покажи ограничения в задаче оптимизации")
+
+    assert intent.kind == "constraints"
 
 
 def test_set_algorithm_parameter_request():

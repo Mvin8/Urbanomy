@@ -8,17 +8,19 @@ from typing import Any
 import geopandas as gpd
 from langchain_core.messages import HumanMessage
 
-from .internal.agent_utils import (
+from .internal.common.agent_utils import (
     build_tool_agent,
     extract_last_ai_message_text,
     extract_last_tool_message,
 )
-from .internal.district_optimization_agent_formatting import (
+from .internal.common.domain_contracts import ToolDescriptor, describe_tool
+from .internal.district_optimization.formatting import (
     compact_tool_output,
     optimization_parameter_response,
     short_response_from_tool,
 )
-from .internal.district_optimization_intents import parse_district_optimization_intent
+from .internal.district_optimization.intents import parse_district_optimization_intent
+from .internal.district_optimization.metadata import DISTRICT_OPTIMIZATION_CAPABILITY_LINES
 from .models import DistrictOptimizationConfig
 from .prompts import DISTRICT_OPTIMIZATION_AGENT_PROMPT
 from .tools.internal.district_optimization import latest_session_or_error, latest_session_summary
@@ -28,6 +30,9 @@ from .tools.calculate_pareto_solution_investment_metrics import (
 from .tools.get_pareto_solution_parameters import make_get_pareto_solution_parameters_tool
 from .tools.get_district_optimization_problem_statement import (
     make_get_district_optimization_problem_statement_tool,
+)
+from .tools.get_district_optimization_constraints import (
+    make_get_district_optimization_constraints_tool,
 )
 from .tools.plot_district_optimization_pareto_front import (
     make_plot_district_optimization_pareto_front_tool,
@@ -68,6 +73,11 @@ class DistrictOptimizationAgent:
             optimization_config=optimization_config,
             session_store=self.session_store,
         )
+        self._constraints_tool = make_get_district_optimization_constraints_tool(
+            baseline_blocks=baseline_blocks,
+            optimization_config=optimization_config,
+            session_store=self.session_store,
+        )
         self._pareto_front_tool = make_plot_district_optimization_pareto_front_tool(
             session_store=self.session_store
         )
@@ -77,6 +87,7 @@ class DistrictOptimizationAgent:
             self._investment_tool,
             self._parameters_tool,
             self._problem_statement_tool,
+            self._constraints_tool,
             self._pareto_front_tool,
         ]
         self._tools_by_name = {tool.name: tool for tool in self._tools}
@@ -136,6 +147,19 @@ class DistrictOptimizationAgent:
     def __call__(self, user_request: str) -> dict[str, Any]:
         return self.invoke(user_request)
 
+    def available_tools(self) -> tuple[Any, ...]:
+        """Return tool instances owned by the optimization domain."""
+        return tuple(self._tools)
+
+    def tool_descriptors(self) -> list[ToolDescriptor]:
+        """Return compact user-facing descriptions of domain tools."""
+        return [describe_tool(tool) for tool in self.available_tools()]
+
+    @staticmethod
+    def capability_lines() -> list[str]:
+        """Return user-facing capabilities exposed by this domain agent."""
+        return list(DISTRICT_OPTIMIZATION_CAPABILITY_LINES)
+
     def _recover_missing_tool_call(self, user_request: str) -> dict[str, Any] | None:
         intent = parse_district_optimization_intent(user_request)
 
@@ -150,6 +174,13 @@ class DistrictOptimizationAgent:
         if intent.kind == "problem_statement":
             return self._invoke_named_tool(
                 tool_name="get_district_optimization_problem_statement",
+                payload={"target_id": intent.target_id},
+                used_tool_fallback=True,
+                user_request=user_request,
+            )
+        if intent.kind == "constraints":
+            return self._invoke_named_tool(
+                tool_name="get_district_optimization_constraints",
                 payload={"target_id": intent.target_id},
                 used_tool_fallback=True,
                 user_request=user_request,

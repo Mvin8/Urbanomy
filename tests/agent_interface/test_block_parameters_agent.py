@@ -38,3 +38,25 @@ def test_block_parameters_agent_returns_parameters_for_target_id():
 def test_block_parameters_request_accepts_natural_word_order():
     assert looks_like_block_parameters_request("Какие параметры квартала 22?")
     assert looks_like_block_parameters_request("Какие у квартала 22 параметры?")
+
+
+def test_block_parameters_agent_returns_only_requested_parameter():
+    baseline_blocks = gpd.GeoDataFrame(
+        [
+            {
+                "id": 86,
+                "population": 250,
+                "land_value": 1500000.0,
+                "geometry": Point(30.0, 60.0),
+            }
+        ],
+        geometry="geometry",
+        crs="EPSG:4326",
+    )
+    agent = BlockParametersAgent(baseline_blocks=baseline_blocks)
+
+    result = agent.invoke("Какое население у квартала 86?")
+
+    assert result["status"] == "ok"
+    assert result["parameters"] == {"population": 250}
+    assert result["response"] == "Население квартала id=86: 250"

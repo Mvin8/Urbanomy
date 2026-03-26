@@ -147,7 +147,7 @@ DEFAULT_BENCHMARKS_RU: Final[dict[LandUse, dict[str, float | int]]] = {
         "cost_demolition": 900,
     },
     LandUse.RECREATION: {
-        "cost_build": 20_000,
+        "cost_build": 25_000,
         "rent_annual": 7_500,
         "rent_years": 15,
         "construction_years": 3,

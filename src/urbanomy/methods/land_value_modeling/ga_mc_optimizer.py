@@ -156,7 +156,7 @@ class DistrictProblem(Problem):
         footprint = float(np.clip(footprint, 0.0, footprint_max))
         genome["footprint_area"] = footprint
 
-        # Предпочитаем параметризацию через (footprint_area, l, mxi).
+        # Предпочитаем параметризацию через (footprint_area, l).
         if "l" in self.var_names:
             l_value = float(genome.get("l", row.get("l", 1.0)))
             l_value = max(l_value, 1.0)
@@ -166,15 +166,12 @@ class DistrictProblem(Problem):
             build = max(float(genome.get("build_floor_area", row.get("build_floor_area", 0.0))), footprint)
             genome["l"] = (build / footprint) if footprint > 0 else 0.0
 
-        if "mxi" in self.var_names:
-            mxi_value = float(genome.get("mxi", row.get("mxi", 0.0)))
-            mxi_value = float(np.clip(mxi_value, 0.0, 1.0))
-            live = build * mxi_value
-            genome["mxi"] = mxi_value
-        else:
-            live = float(genome.get("living_area", row.get("living_area", 0.0)))
-            live = float(np.clip(live, 0.0, build))
-            genome["mxi"] = (live / build) if build > 0 else 0.0
+        # Residential share controls the built-area split:
+        # 80% of the residential portion becomes living area,
+        # the rest remains non-living.
+        residential_share = float(np.clip(genome.get("residential", 0.0), 0.0, 1.0))
+        live = float(np.clip(build * residential_share * 0.8, 0.0, build))
+        genome["mxi"] = (live / build) if build > 0 else 0.0
 
         non_live = max(build - live, 0.0)
 

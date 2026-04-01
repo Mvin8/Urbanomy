@@ -18,31 +18,61 @@ except Exception:
     pass
 
 from .models import (
+    ConfirmationGate,
+    DecisionDocumentChunk,
     DistrictOptimizationConfig,
     DistrictOptimizationSession,
+    ExecutionPlan,
+    ExecutionPlanStep,
     LandValueVisualizationArtifact,
     LandValueVisualizationRequest,
     LandValueVisualizationResult,
+    ParetoDocumentCandidateReview,
+    ParetoDocumentSelectionResult,
+    ResearchBrief,
+    ResearchEntity,
+    RetrievedDocumentChunk,
+    SessionArtifact,
+    SessionMemorySnapshot,
+    SessionTask,
+    StrategyDecisionDocument,
     TargetBlockVisualizationArtifact,
     TargetBlockVisualizationResult,
     UrbanomyOrchestratorRequest,
     UrbanomyOrchestratorResult,
     UrbanomyOrchestratorRouteDecision,
+    VerificationIssue,
+    VerificationReport,
     VisualizationResult,
     VisualizationRouteDecision,
 )
 
 __all__ = [
+    "ConfirmationGate",
+    "DecisionDocumentChunk",
     "DistrictOptimizationConfig",
     "DistrictOptimizationSession",
+    "ExecutionPlan",
+    "ExecutionPlanStep",
     "LandValueVisualizationArtifact",
     "LandValueVisualizationRequest",
     "LandValueVisualizationResult",
+    "ParetoDocumentCandidateReview",
+    "ParetoDocumentSelectionResult",
+    "ResearchBrief",
+    "ResearchEntity",
+    "RetrievedDocumentChunk",
+    "SessionArtifact",
+    "SessionMemorySnapshot",
+    "SessionTask",
+    "StrategyDecisionDocument",
     "TargetBlockVisualizationArtifact",
     "TargetBlockVisualizationResult",
     "UrbanomyOrchestratorRequest",
     "UrbanomyOrchestratorResult",
     "UrbanomyOrchestratorRouteDecision",
+    "VerificationIssue",
+    "VerificationReport",
     "VisualizationResult",
     "VisualizationRouteDecision",
     "create_urbanomy_orchestrator",
@@ -113,6 +143,34 @@ _load_optional(
     [
         "DistrictOptimizationAgent",
         "create_district_optimization_agent",
+    ],
+)
+_load_optional(
+    ".pareto_document_agent",
+    [
+        "ParetoDocumentAgent",
+        "create_pareto_document_agent",
+    ],
+)
+_load_optional(
+    ".document_rag_agent",
+    [
+        "DocumentRagAgent",
+        "create_document_rag_agent",
+    ],
+)
+_load_optional(
+    ".planning_agent",
+    [
+        "PlanningAgent",
+        "create_planning_agent",
+    ],
+)
+_load_optional(
+    ".verification_agent",
+    [
+        "VerificationAgent",
+        "create_verification_agent",
     ],
 )
 _load_optional(

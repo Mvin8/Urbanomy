@@ -142,6 +142,49 @@ SOLUTION_PARAMETER_ALIASES = (
     "params repaired",
 )
 
+DOCUMENT_REGISTRATION_ALIASES = (
+    "добавь документ",
+    "сохрани документ",
+    "зарегистрируй документ",
+    "загрузи документ",
+    "добавь генплан",
+    "добавь стратегию",
+    "сохрани генплан",
+    "сохрани стратегию",
+    "текст документа",
+    "document_text",
+    "document_path",
+)
+
+ACTIVE_DOCUMENT_ALIASES = (
+    "активный документ",
+    "какой документ",
+    "что за документ",
+    "какой сейчас документ",
+)
+
+DOCUMENT_SELECTION_ALIASES = (
+    "лучшее решение",
+    "лучший сценарий",
+    "рекомендуй решение",
+    "на основе документа",
+    "по документу",
+    "по генплану",
+    "по стратегии",
+)
+
+DOCUMENT_RETRIEVAL_ALIASES = (
+    "фрагмент документа",
+    "фрагменты документа",
+    "найди в документе",
+    "что в документе сказано",
+    "покажи фрагменты",
+    "покажи выдержки",
+    "контекст документа",
+    "rag",
+    "retrieval",
+)
+
 ALGORITHM_PARAMETER_ALIASES: dict[AlgorithmParameterName, tuple[str, ...]] = {
     "pop_size": (
         "pop_size",
@@ -204,6 +247,10 @@ class DistrictOptimizationIntent:
         "plot_solution",
         "investment_metrics",
         "solution_parameters",
+        "register_decision_document",
+        "active_decision_document",
+        "retrieve_document_context",
+        "select_solution_by_document",
         "unknown",
     ]
     target_id: int | None = None
@@ -254,6 +301,21 @@ def parse_district_optimization_intent(user_request: str) -> DistrictOptimizatio
             kind="constraints",
             target_id=extract_target_id(raw_text),
         )
+
+    if is_active_document_request(text):
+        return DistrictOptimizationIntent(kind="active_decision_document")
+
+    if is_document_registration_request(raw_text, text):
+        return DistrictOptimizationIntent(kind="register_decision_document")
+
+    if is_document_selection_request(text):
+        return DistrictOptimizationIntent(
+            kind="select_solution_by_document",
+            solution_number=extract_solution_number(raw_text),
+        )
+
+    if is_document_retrieval_request(text):
+        return DistrictOptimizationIntent(kind="retrieve_document_context")
 
     if is_run_optimization_request(raw_text, text):
         return DistrictOptimizationIntent(
@@ -395,3 +457,25 @@ def is_investment_metrics_request(text: str) -> bool:
 def is_solution_parameter_request(text: str) -> bool:
     """Return whether the request asks for parameters of one specific solution."""
     return has_any_alias(text, SOLUTION_PARAMETER_ALIASES)
+
+
+def is_document_registration_request(raw_text: str, text: str) -> bool:
+    """Return whether the request appears to register a planning document."""
+    return has_any_alias(text, DOCUMENT_REGISTRATION_ALIASES) and (
+        ":" in raw_text or "\n" in raw_text or "document_path" in text
+    )
+
+
+def is_active_document_request(text: str) -> bool:
+    """Return whether the request asks which planning document is active."""
+    return has_any_alias(text, ACTIVE_DOCUMENT_ALIASES)
+
+
+def is_document_selection_request(text: str) -> bool:
+    """Return whether the request asks to choose a Pareto solution by document."""
+    return has_any_alias(text, DOCUMENT_SELECTION_ALIASES)
+
+
+def is_document_retrieval_request(text: str) -> bool:
+    """Return whether the request asks for document-grounded evidence."""
+    return has_any_alias(text, DOCUMENT_RETRIEVAL_ALIASES)

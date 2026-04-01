@@ -81,6 +81,36 @@ def short_response_from_tool(
     if tool_name == "plot_district_optimization_pareto_front":
         text = str(tool_output.get("summary_text", "")).strip()
         return text or "Построен график Парето-фронта."
+    if tool_name == "register_decision_document":
+        summary = str(tool_output.get("summary", "")).strip()
+        name = str(tool_output.get("document_name", "документ")).strip()
+        base = f"Документ '{name}' зарегистрирован для выбора Pareto-решений."
+        chunk_count = tool_output.get("chunk_count")
+        if chunk_count:
+            base = f"{base} Индексировано фрагментов: {chunk_count}."
+        return f"{base}\n\n{summary}" if summary else base
+    if tool_name == "get_active_decision_document":
+        name = str(tool_output.get("document_name", "документ")).strip()
+        summary = str(tool_output.get("summary", "")).strip()
+        base = f"Сейчас активен документ '{name}'."
+        return f"{base}\n\n{summary}" if summary else base
+    if tool_name == "retrieve_decision_document_context":
+        chunks = list(tool_output.get("chunks") or [])
+        if not chunks:
+            return "Релевантные фрагменты в активном документе не найдены."
+        lines = ["Вот релевантные фрагменты документа:"]
+        for chunk in chunks[:4]:
+            chunk_id = str(chunk.get("chunk_id") or "").strip() or "chunk"
+            score = float(chunk.get("score") or 0.0)
+            text = " ".join(str(chunk.get("text") or "").split()).strip()
+            suffix = "…" if len(text) > 180 else ""
+            lines.append(f"- {chunk_id} (score={score:.2f}): {text[:180]}{suffix}")
+        return "\n".join(lines)
+    if tool_name == "select_pareto_solution_by_document":
+        text = str(tool_output.get("selection_text", "")).strip()
+        return text or (
+            f"По документу выбрано решение {tool_output.get('selected_solution_number')}."
+        )
     if tool_name == "get_district_optimization_problem_statement":
         if wants_detailed_problem_statement(user_request):
             text = str(tool_output.get("problem_statement_text", "")).strip()
@@ -155,6 +185,46 @@ def compact_tool_output(
             "land_use_labels": tool_output.get("land_use_labels"),
             "summary_text": tool_output.get("summary_text"),
             "figure_created": tool_output.get("figure_created"),
+        }
+    if tool_name == "register_decision_document":
+        return {
+            "document_name": tool_output.get("document_name"),
+            "document_type": tool_output.get("document_type"),
+            "summary": tool_output.get("summary"),
+            "priorities": tool_output.get("priorities"),
+            "retrieval_backend": tool_output.get("retrieval_backend"),
+            "chunk_count": tool_output.get("chunk_count"),
+            "preview_text": tool_output.get("preview_text"),
+        }
+    if tool_name == "get_active_decision_document":
+        return {
+            "document_name": tool_output.get("document_name"),
+            "document_type": tool_output.get("document_type"),
+            "summary": tool_output.get("summary"),
+            "priorities": tool_output.get("priorities"),
+            "retrieval_backend": tool_output.get("retrieval_backend"),
+            "chunk_count": tool_output.get("chunk_count"),
+            "preview_text": tool_output.get("preview_text"),
+        }
+    if tool_name == "retrieve_decision_document_context":
+        return {
+            "query": tool_output.get("query"),
+            "top_k": tool_output.get("top_k"),
+            "chunks": tool_output.get("chunks"),
+        }
+    if tool_name == "select_pareto_solution_by_document":
+        return {
+            "document_name": tool_output.get("document_name"),
+            "document_type": tool_output.get("document_type"),
+            "solution_number": tool_output.get("solution_number"),
+            "selected_solution_number": tool_output.get("selected_solution_number"),
+            "selected_scenario_id": tool_output.get("selected_scenario_id"),
+            "selected_title": tool_output.get("selected_title"),
+            "criteria_used": tool_output.get("criteria_used"),
+            "retrieved_chunks": tool_output.get("retrieved_chunks"),
+            "rationale": tool_output.get("rationale"),
+            "risks": tool_output.get("risks"),
+            "selection_text": tool_output.get("selection_text"),
         }
     if tool_name == "get_district_optimization_problem_statement":
         return {

@@ -154,6 +154,18 @@ class GeneralQaAgent:
                     context.get("latest_optimization_context", "")
                 ).strip(),
                 "recent_history": str(context.get("recent_history", "")).strip(),
+                "recent_tasks": str(context.get("recent_tasks", "")).strip(),
+                "session_memory": str(context.get("session_memory", "")).strip(),
+                "latest_verification": str(context.get("latest_verification", "")).strip(),
+                "research_brief": str(context.get("research_brief", "")).strip(),
+                "active_plan": str(context.get("active_plan", "")).strip(),
+                "pending_confirmation": str(context.get("pending_confirmation", "")).strip(),
+                "active_decision_document": str(
+                    context.get("active_decision_document", "")
+                ).strip(),
+                "latest_document_selection": str(
+                    context.get("latest_document_selection", "")
+                ).strip(),
                 "latest_response": str(context.get("latest_response", "")).strip(),
             }
 
@@ -209,6 +221,14 @@ class GeneralQaAgent:
         tool_catalog = str(context.get("tool_catalog", "")).strip()
         latest = str(context.get("latest_optimization_context", "")).strip()
         recent_history = str(context.get("recent_history", "")).strip()
+        recent_tasks = str(context.get("recent_tasks", "")).strip()
+        session_memory = str(context.get("session_memory", "")).strip()
+        latest_verification = str(context.get("latest_verification", "")).strip()
+        research_brief = str(context.get("research_brief", "")).strip()
+        active_plan = str(context.get("active_plan", "")).strip()
+        pending_confirmation = str(context.get("pending_confirmation", "")).strip()
+        active_decision_document = str(context.get("active_decision_document", "")).strip()
+        latest_document_selection = str(context.get("latest_document_selection", "")).strip()
         latest_response = str(context.get("latest_response", "")).strip()
         if tool_catalog:
             parts.append(f"Каталог инструментов:\n{tool_catalog}")
@@ -216,6 +236,22 @@ class GeneralQaAgent:
             parts.append(f"Актуальные возможности orchestrator:\n{capabilities}")
         if latest:
             parts.append(f"Контекст последней оптимизации:\n{latest}")
+        if recent_tasks:
+            parts.append(f"Последние задачи сессии:\n{recent_tasks}")
+        if session_memory:
+            parts.append(f"Session memory:\n{session_memory}")
+        if latest_verification:
+            parts.append(f"Проверка последнего шага:\n{latest_verification}")
+        if research_brief:
+            parts.append(f"Research brief:\n{research_brief}")
+        if active_plan:
+            parts.append(f"Активный план:\n{active_plan}")
+        if pending_confirmation:
+            parts.append(f"Ожидаемое подтверждение:\n{pending_confirmation}")
+        if active_decision_document:
+            parts.append(f"Активный policy-документ:\n{active_decision_document}")
+        if latest_document_selection:
+            parts.append(f"Последний выбор решения по документу:\n{latest_document_selection}")
         if recent_history:
             parts.append(f"Недавний диалог:\n{recent_history}")
         if latest_response:
@@ -241,6 +277,19 @@ class GeneralQaAgent:
             "парето",
             "решени",
             "контекст",
+            "задач",
+            "памят",
+            "memory",
+            "провер",
+            "вериф",
+            "план",
+            "шаг",
+            "research",
+            "подтверж",
+            "документ",
+            "генплан",
+            "стратег",
+            "рекоменд",
         )
         return any(marker in text for marker in markers)
 
@@ -273,6 +322,12 @@ class GeneralQaAgent:
         tool_catalog = str(context.get("tool_catalog", "")).strip()
         latest = str(context.get("latest_optimization_context", "")).strip()
         recent_history = str(context.get("recent_history", "")).strip()
+        recent_tasks = str(context.get("recent_tasks", "")).strip()
+        session_memory = str(context.get("session_memory", "")).strip()
+        latest_verification = str(context.get("latest_verification", "")).strip()
+        research_brief = str(context.get("research_brief", "")).strip()
+        active_plan = str(context.get("active_plan", "")).strip()
+        pending_confirmation = str(context.get("pending_confirmation", "")).strip()
         if not self._should_use_context_tool(user_request):
             return (
                 "Не удалось получить ответ от модели. "
@@ -285,6 +340,18 @@ class GeneralQaAgent:
             parts.append(f"Доступные возможности:\n{capabilities}")
         if latest:
             parts.append(f"Контекст последней оптимизации:\n{latest}")
+        if recent_tasks:
+            parts.append(f"Последние задачи сессии:\n{recent_tasks}")
+        if session_memory:
+            parts.append(f"Session memory:\n{session_memory}")
+        if latest_verification:
+            parts.append(f"Проверка последнего шага:\n{latest_verification}")
+        if research_brief:
+            parts.append(f"Research brief:\n{research_brief}")
+        if active_plan:
+            parts.append(f"Активный план:\n{active_plan}")
+        if pending_confirmation:
+            parts.append(f"Ожидаемое подтверждение:\n{pending_confirmation}")
         if recent_history:
             parts.append(f"Последние сообщения:\n{recent_history}")
         return "\n\n".join(parts)

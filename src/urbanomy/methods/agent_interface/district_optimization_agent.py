@@ -22,6 +22,7 @@ from .internal.district_optimization.formatting import (
 from .internal.district_optimization.intents import parse_district_optimization_intent
 from .internal.district_optimization.metadata import DISTRICT_OPTIMIZATION_CAPABILITY_LINES
 from .models import DistrictOptimizationConfig
+from .pareto_document_agent import create_pareto_document_agent
 from .prompts import DISTRICT_OPTIMIZATION_AGENT_PROMPT
 from .tools.internal.district_optimization import latest_session_or_error, latest_session_summary
 from .tools.calculate_pareto_solution_investment_metrics import (
@@ -56,6 +57,10 @@ class DistrictOptimizationAgent:
         self.llm = llm
         self.optimization_config = optimization_config
         self.session_store: dict[str, Any] = {}
+        self._pareto_document_agent = create_pareto_document_agent(
+            llm=self.llm,
+            session_store=self.session_store,
+        )
         self._run_tool = make_run_district_optimization_tool(
             baseline_blocks=baseline_blocks,
             optimization_config=optimization_config,
@@ -89,6 +94,7 @@ class DistrictOptimizationAgent:
             self._problem_statement_tool,
             self._constraints_tool,
             self._pareto_front_tool,
+            *self._pareto_document_agent.available_tools(),
         ]
         self._tools_by_name = {tool.name: tool for tool in self._tools}
         self.agent = build_tool_agent(
@@ -167,6 +173,13 @@ class DistrictOptimizationAgent:
             return None
         if intent.kind == "session_summary":
             return self._session_summary_response()
+        if intent.kind in {
+            "register_decision_document",
+            "active_decision_document",
+            "retrieve_document_context",
+            "select_solution_by_document",
+        }:
+            return self._pareto_document_agent.invoke(user_request)
         if intent.kind == "set_algorithm_parameter":
             return self._set_algorithm_parameters_response(intent)
         if intent.kind == "algorithm_parameter":

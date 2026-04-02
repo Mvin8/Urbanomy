@@ -15,23 +15,20 @@ from blocksnet.enums import LandUse
 
 from urbanomy.utils.investment_input import (
     INVESTMENT_NUMERIC_COLUMNS,
+    LAND_USE_SHARE_COLUMNS,
     prepare_investment_input,
 )
 
 from .constants import (
+    DEFAULT_BENCHMARKS_RU,
     DEFAULT_DISCOUNT_RATE,
     DEFAULT_ECON_METRIC,
-    DEFAULT_IP_VALUE,
-    INVESTMENT_WEIGHTS,
-    LAND_USE_CONFIGS,
     SUMMARY_COLUMNS,
 )
 from .utils_metrics import (
     economic_index,
     irr,
     make_cashflow,
-    nanminmax,
-    normalize_series,
     npv,
     payback_period,
     quantize,
@@ -44,7 +41,7 @@ class InvestmentMetricsResult:
 
     npv: float
     irr: float
-    roi: float
+    profitability_index: float
     payback_years: float
     economic_index: float
 
@@ -53,6 +50,8 @@ class InvestmentMetricsResult:
         cls,
         cashflow: Sequence[float],
         discount_rate: float,
+        *,
+        compute_ei: bool = True,
     ) -> "InvestmentMetricsResult":
         """Create an instance from a cash-flow sequence.
 
@@ -78,21 +77,29 @@ class InvestmentMetricsResult:
         irr_raw = irr(cashflow)
         irr_value = float(irr_raw) if irr_raw is not None else np.nan
 
-        roi_value = np.nan
-        if cashflow and cashflow[0] < 0:
-            denom = -cashflow[0]
-            if denom:
-                roi_value = sum(cashflow[1:]) / denom
+        pv_inflows = 0.0
+        pv_outflows = 0.0
+        for period, cf in enumerate(cashflow):
+            discounted = float(cf) / (1.0 + discount_rate) ** period
+            if discounted > 0:
+                pv_inflows += discounted
+            elif discounted < 0:
+                pv_outflows += -discounted
+        pi_value = (pv_inflows / pv_outflows) if pv_outflows > 0 else np.nan
 
         payback_raw = payback_period(discount_rate, cashflow)
         payback_value = float(payback_raw) if payback_raw is not None else np.nan
 
-        ei_value = economic_index(raw_npv, irr_raw, discount_rate)
+        ei_value = (
+            economic_index(raw_npv, irr_raw, discount_rate)
+            if compute_ei
+            else math.nan
+        )
 
         return cls(
             npv=npv_value,
             irr=irr_value,
-            roi=roi_value,
+            profitability_index=pi_value,
             payback_years=payback_value,
             economic_index=ei_value,
         )
@@ -118,25 +125,11 @@ class RowComputation:
     land_area: float
     built_area: float
     land_cost_total: float
+    demolition_cost: float
     construction_cost: float
     investment_need: float
     cashflow: list[float]
     metrics: InvestmentMetricsResult
-
-
-@dataclass(frozen=True)
-class NormalizedMetricRange:
-    """Normalized metric values alongside their source bounds."""
-
-    values: pd.Series
-    normalized: pd.Series
-    minimum: float
-    maximum: float
-
-    @property
-    def has_valid(self) -> bool:
-        """Return True when at least one finite value is present."""
-        return bool(self.values.notna().any())
 
 
 class InvestmentAttractivenessAnalyzer:
@@ -144,37 +137,35 @@ class InvestmentAttractivenessAnalyzer:
 
     def __init__(
         self,
-        benchmarks: Mapping[str | LandUse, Mapping[str, Any]],
+        benchmarks: Mapping[str | LandUse, Mapping[str, Any]] | None = None,
         weights_dict: Mapping[str | LandUse, Sequence[float]] | None = None,
         econ_metric: str = DEFAULT_ECON_METRIC,
         discount_rate: float | None = None,
     ) -> None:
-        """Initialise the analyzer with reference profiles and weights.
+        """Initialise the analyzer with reference profiles.
 
         Parameters
         ----------
-        benchmarks : Mapping[str | LandUse, Mapping[str, Any]]
+        benchmarks : Mapping[str | LandUse, Mapping[str, Any]] or None, optional
             Mapping from land-use codes or ``LandUse`` enums to benchmark profiles describing
-            profitability assumptions (densities, prices, etc.).
+            profitability assumptions. If ``None``, uses
+            :data:`DEFAULT_BENCHMARKS_RU`.
         weights_dict : Mapping[str | LandUse, Sequence[float]] or None, optional
-            Optional override for spatial/economic weights per land-use key.
-            Defaults to ``INVESTMENT_WEIGHTS`` when omitted.
+            Reserved for backward compatibility; ignored.
         econ_metric : str, optional
             Economic metric to emphasise when normalising (``"EI"`` by default).
         discount_rate : float or None, optional
             Discount rate used when the benchmark profile does not specify one.
             If ``None``, ``DEFAULT_DISCOUNT_RATE`` is used.
         """
-        self._benchmarks_enum = self._normalise_benchmarks(benchmarks)
+        self._benchmarks_enum = self._normalise_benchmarks(
+            benchmarks or DEFAULT_BENCHMARKS_RU
+        )
         self.benchmarks = {
             land_use.value: dict(profile)
             for land_use, profile in self._benchmarks_enum.items()
         }
-        enum_weights, plain_weights = self._normalise_weights(
-            weights_dict or INVESTMENT_WEIGHTS
-        )
-        self._weights_enum = enum_weights
-        self.weights = plain_weights
+        _ = weights_dict
         self.metric = econ_metric.upper()
         self.discount_rate = discount_rate if discount_rate is not None else DEFAULT_DISCOUNT_RATE
 
@@ -207,27 +198,6 @@ class InvestmentAttractivenessAnalyzer:
                 )
             normalised[land_use] = dict(profile)
         return normalised
-
-    def _normalise_weights(
-        self,
-        weights: Mapping[str | LandUse, Sequence[float]],
-    ) -> tuple[dict[LandUse, tuple[float, float]], dict[str, tuple[float, float]]]:
-        """Convert weights to LandUse-aware and string-keyed mappings."""
-        enum_map: dict[LandUse, tuple[float, float]] = {}
-        string_map: dict[str, tuple[float, float]] = {}
-        for key, pair in weights.items():
-            land_use = self._coerce_land_use(key)
-            if not isinstance(pair, Sequence) or len(pair) != 2:
-                raise ValueError(
-                    f"Weights for '{land_use.value}' must be a sequence of two values"
-                )
-            spatial, economic = float(pair[0]), float(pair[1])
-            enum_map[land_use] = (spatial, economic)
-            string_map[land_use.value] = (spatial, economic)
-        for land_use in LAND_USE_CONFIGS:
-            enum_map.setdefault(land_use, (0.5, 0.5))
-            string_map.setdefault(land_use.value, (0.5, 0.5))
-        return enum_map, string_map
 
     @staticmethod
     def _to_float(value: Any) -> float:
@@ -285,6 +255,131 @@ class InvestmentAttractivenessAnalyzer:
             if col in gdf.columns:
                 gdf[col] = pd.to_numeric(gdf[col], errors="coerce")
 
+    def _extract_built_area_components(
+        self,
+        row: pd.Series,
+    ) -> tuple[float, float, float]:
+        """Read living/non-living areas and derive total built area.
+
+        When both explicit components are present, they take precedence over
+        ``build_floor_area`` because they provide the semantic split required
+        for mixed-use allocation. When only one component is known, the total
+        falls back to ``build_floor_area`` so the residual can be distributed
+        across the remaining land uses.
+        """
+        living = self._to_float(row.get("living_area"))
+        if not np.isfinite(living) or living <= 0:
+            living = math.nan
+
+        non_living = self._to_float(row.get("non_living_area"))
+        if not np.isfinite(non_living) or non_living <= 0:
+            non_living = math.nan
+
+        known_components = [
+            value for value in (living, non_living) if np.isfinite(value) and value > 0
+        ]
+        components_total = float(sum(known_components)) if known_components else math.nan
+
+        build_floor_area = self._to_float(row.get("build_floor_area"))
+        if not np.isfinite(build_floor_area) or build_floor_area <= 0:
+            build_floor_area = math.nan
+
+        if len(known_components) == 2:
+            total_built_area = components_total
+        elif np.isfinite(build_floor_area):
+            total_built_area = build_floor_area
+        else:
+            total_built_area = components_total
+
+        if not np.isfinite(total_built_area) or total_built_area <= 0:
+            total_built_area = math.nan
+
+        return living, non_living, total_built_area
+
+    @staticmethod
+    def _distribute_by_weights(
+        total_amount: float,
+        weights: Mapping[LandUse, float],
+    ) -> dict[LandUse, float]:
+        """Distribute a positive amount proportionally to positive weights."""
+        if not np.isfinite(total_amount) or total_amount <= 0:
+            return {}
+
+        valid_weights = {
+            key: float(value)
+            for key, value in weights.items()
+            if np.isfinite(value) and value > 0
+        }
+        total_weight = float(sum(valid_weights.values()))
+        if total_weight <= 0:
+            return {}
+
+        return {
+            key: total_amount * (value / total_weight)
+            for key, value in valid_weights.items()
+        }
+
+    def _allocate_built_area_by_zone(
+        self,
+        row: pd.Series,
+        zone_areas: Mapping[LandUse, float],
+    ) -> tuple[dict[LandUse, float], float]:
+        """Allocate built area to land uses using living/non-living semantics.
+
+        Residential zones receive ``living_area`` first. Non-residential zones
+        receive ``non_living_area`` first. Any residual from ``build_floor_area``
+        is allocated to the complementary group when possible, otherwise across
+        all zones proportionally to land-use area.
+        """
+        zone_weights = {
+            lu: float(area)
+            for lu, area in zone_areas.items()
+            if np.isfinite(area) and area > 0
+        }
+        if not zone_weights:
+            return {}, math.nan
+
+        living, non_living, total_built_area = self._extract_built_area_components(row)
+        allocations: dict[LandUse, float] = {}
+        allocated_total = 0.0
+
+        residential_zones = {
+            lu: area for lu, area in zone_weights.items() if lu == LandUse.RESIDENTIAL
+        }
+        non_residential_zones = {
+            lu: area for lu, area in zone_weights.items() if lu != LandUse.RESIDENTIAL
+        }
+
+        component_targets = (
+            (living, residential_zones),
+            (non_living, non_residential_zones),
+        )
+        for component_area, targets in component_targets:
+            distributed = self._distribute_by_weights(component_area, targets)
+            if not distributed:
+                continue
+            for zone_lu, zone_built_area in distributed.items():
+                allocations[zone_lu] = allocations.get(zone_lu, 0.0) + zone_built_area
+            allocated_total += float(sum(distributed.values()))
+
+        residual_built_area = (
+            total_built_area - allocated_total
+            if np.isfinite(total_built_area)
+            else math.nan
+        )
+        if np.isfinite(residual_built_area) and residual_built_area > 0:
+            residual_targets = zone_weights
+            if np.isfinite(living) and living > 0 and not (np.isfinite(non_living) and non_living > 0):
+                residual_targets = non_residential_zones or zone_weights
+            elif np.isfinite(non_living) and non_living > 0 and not (np.isfinite(living) and living > 0):
+                residual_targets = residential_zones or zone_weights
+
+            distributed = self._distribute_by_weights(residual_built_area, residual_targets)
+            for zone_lu, zone_built_area in distributed.items():
+                allocations[zone_lu] = allocations.get(zone_lu, 0.0) + zone_built_area
+
+        return allocations, total_built_area
+
     def _prepare_profile(self, row: pd.Series, base_profile: dict[str, Any]) -> PreparedProfile:
         """Combine a row with a benchmark profile for cash-flow modelling.
 
@@ -314,17 +409,11 @@ class InvestmentAttractivenessAnalyzer:
         if not np.isfinite(land_area) or land_area <= 0:
             raise ValueError(f"Polygon {row.name} has no valid land area")
 
-        land_cost_total = self._to_float(
-            row.get("land_value", row.get("land_value_before"))
-        )
+        land_cost_total = self._to_float(row.get("land_value"))
         if np.isfinite(land_cost_total) and land_area > 0:
             params["land_cost"] = land_cost_total / land_area
 
-        living = self._to_float(row.get("living_area"))
-        non_living = self._to_float(row.get("non_living_area"))
-        built_area = living + non_living
-        if not np.isfinite(built_area) or built_area <= 0:
-            built_area = self._to_float(row.get("build_floor_area"))
+        _, _, built_area = self._extract_built_area_components(row)
 
         if np.isfinite(built_area) and built_area > 0:
             params["built_area"] = built_area
@@ -340,10 +429,6 @@ class InvestmentAttractivenessAnalyzer:
                 land_area * density if np.isfinite(density) and density > 0 else math.nan
             )
 
-        share_val = self._to_float(row.get("share"))
-        if np.isfinite(share_val) and share_val > 0:
-            params["rent_share"] = max(0.0, min(share_val, 1.0))
-
         return PreparedProfile(
             params=params,
             land_area=land_area,
@@ -351,6 +436,28 @@ class InvestmentAttractivenessAnalyzer:
             gross_floor_area=gross_floor_area,
             land_cost_total=land_cost_total,
         )
+
+    def _land_use_areas_from_row(self, row: pd.Series) -> dict[LandUse, float]:
+        """Extract positive per-land-use areas from a row.
+
+        Assumes zone columns in ``LAND_USE_SHARE_COLUMNS`` are already expressed
+        in square meters by :func:`prepare_investment_input`.
+        """
+        result: dict[LandUse, float] = {}
+        for col in LAND_USE_SHARE_COLUMNS:
+            if col not in row.index:
+                continue
+            area_val = self._to_float(row.get(col))
+            if not np.isfinite(area_val) or area_val <= 0:
+                continue
+            try:
+                lu = self._coerce_land_use(col)
+            except Exception:
+                continue
+            if lu not in self._benchmarks_enum:
+                continue
+            result[lu] = float(area_val)
+        return result
 
     def _calculate_row_metrics(
         self,
@@ -384,86 +491,118 @@ class InvestmentAttractivenessAnalyzer:
         if land_use_enum not in self._benchmarks_enum:
             raise KeyError(f"No benchmark settings for land_use='{land_use_enum.value}'")
 
-        profile = self._prepare_profile(row, self._benchmarks_enum[land_use_enum])
-        cashflow = make_cashflow(land_use_enum.value, profile.land_area, profile.params)
-        discount_rate = profile.params.get("discount_rate", default_discount_rate)
+        zone_areas = self._land_use_areas_from_row(row)
+        if not zone_areas:
+            zone_areas = {land_use_enum: self._to_float(row.get("site_area"))}
+        zone_areas = {
+            lu: area for lu, area in zone_areas.items() if np.isfinite(area) and area > 0
+        }
+        if not zone_areas:
+            profile = self._prepare_profile(row, self._benchmarks_enum[land_use_enum])
+            zone_areas = {land_use_enum: profile.land_area}
+        total_zone_area = float(sum(zone_areas.values()))
 
-        metrics = InvestmentMetricsResult.from_cashflow(cashflow, discount_rate)
+        land_cost_total = self._to_float(row.get("land_value"))
+        land_cost_per_area = (
+            land_cost_total / total_zone_area
+            if np.isfinite(land_cost_total) and total_zone_area > 0
+            else math.nan
+        )
 
-        cost_build_unit = self._to_float(profile.params.get("cost_build"))
-        if np.isfinite(profile.gross_floor_area) and np.isfinite(cost_build_unit):
-            construction_cost = profile.gross_floor_area * cost_build_unit
+        zone_built_areas, total_built_area = self._allocate_built_area_by_zone(row, zone_areas)
+
+        old_build_floor_area = self._to_float(
+            row.get("build_floor_area_before", row.get("build_floor_area"))
+        )
+        if not np.isfinite(old_build_floor_area) or old_build_floor_area < 0:
+            old_build_floor_area = 0.0
+        demolition_land_use_raw = row.get("land_use_before")
+        if demolition_land_use_raw is None or str(demolition_land_use_raw).strip() == "":
+            demolition_land_use_raw = land_use_raw
+        demolition_land_use_enum: LandUse | None = None
+        try:
+            demolition_land_use_enum = self._coerce_land_use(demolition_land_use_raw)
+        except Exception:
+            demolition_land_use_enum = None
+        fallback_demo_lu = next(iter(zone_areas.keys()))
+        demolition_profile = (
+            self._benchmarks_enum[demolition_land_use_enum]
+            if demolition_land_use_enum in self._benchmarks_enum
+            else self._benchmarks_enum[fallback_demo_lu]
+        )
+        cost_demolition_unit = self._to_float(demolition_profile.get("cost_demolition"))
+        demolition_cost_total = (
+            old_build_floor_area * cost_demolition_unit
+            if np.isfinite(cost_demolition_unit) and cost_demolition_unit >= 0
+            else 0.0
+        )
+
+        zone_cashflows: list[list[float]] = []
+        zone_discount_rates: list[float] = []
+        construction_cost_total = 0.0
+        built_area_total = 0.0
+        has_construction = False
+        has_built_area = False
+
+        for zone_lu, zone_area in zone_areas.items():
+            zone_profile = dict(self._benchmarks_enum[zone_lu])
+            if np.isfinite(land_cost_per_area) and land_cost_per_area >= 0:
+                zone_profile["land_cost"] = land_cost_per_area
+            zone_built_area = zone_built_areas.get(zone_lu, math.nan)
+            if np.isfinite(zone_built_area) and zone_built_area > 0:
+                zone_profile["built_area"] = zone_built_area
+                built_area_total += zone_built_area
+                has_built_area = True
+
+            zone_cf = make_cashflow(zone_lu.value, zone_area, zone_profile)
+            zone_cashflows.append(zone_cf)
+
+            zone_discount = self._to_float(zone_profile.get("discount_rate", default_discount_rate))
+            zone_discount_rates.append(
+                zone_discount if np.isfinite(zone_discount) else float(default_discount_rate)
+            )
+
+            zone_cost_build = self._to_float(zone_profile.get("cost_build"))
+            zone_gfa = self._to_float(zone_profile.get("built_area"))
+            if not np.isfinite(zone_gfa) or zone_gfa <= 0:
+                zone_density = self._to_float(zone_profile.get("density"))
+                if np.isfinite(zone_density) and zone_density > 0:
+                    zone_gfa = zone_area * zone_density
+                else:
+                    zone_gfa = zone_area
+            if np.isfinite(zone_gfa) and zone_gfa > 0 and np.isfinite(zone_cost_build):
+                construction_cost_total += zone_gfa * zone_cost_build
+                has_construction = True
+
+        cashflow = self._aggregate_cashflows(zone_cashflows)
+        if zone_discount_rates and total_zone_area > 0:
+            weighted_discount_rate = float(
+                np.average(zone_discount_rates, weights=list(zone_areas.values()))
+            )
         else:
-            construction_cost = math.nan
+            weighted_discount_rate = float(default_discount_rate)
+        metrics = InvestmentMetricsResult.from_cashflow(cashflow, weighted_discount_rate)
 
+        construction_cost = construction_cost_total if has_construction else math.nan
+        demolition_cost = float(demolition_cost_total)
         finite_capex = [
             value
-            for value in (profile.land_cost_total, construction_cost)
+            for value in (land_cost_total, demolition_cost, construction_cost)
             if np.isfinite(value)
         ]
         investment_need = float(sum(finite_capex)) if finite_capex else math.nan
-
         return RowComputation(
             index=idx,
-            land_use=land_use_enum.value,
-            land_area=profile.land_area,
-            built_area=profile.built_area,
-            land_cost_total=profile.land_cost_total,
+            land_use=land_use_enum.value if len(zone_areas) == 1 else "mixed",
+            land_area=total_zone_area,
+            built_area=built_area_total if has_built_area else total_built_area,
+            land_cost_total=land_cost_total,
+            demolition_cost=demolition_cost,
             construction_cost=construction_cost,
             investment_need=investment_need,
             cashflow=list(cashflow),
             metrics=metrics,
         )
-
-    def _normalize_spatial_metric(self, price_series: pd.Series) -> NormalizedMetricRange:
-        """Normalise land price proxies onto a 0-100 scale.
-
-        Parameters
-        ----------
-        price_series : pandas.Series
-            Series of land-price proxies for each polygon.
-
-        Returns
-        -------
-        NormalizedMetricRange
-            Original values, normalised scores, and their min/max bounds.
-        """
-        if price_series.notna().any():
-            s_min, s_max = nanminmax(price_series[price_series.notna()])
-            normalized = normalize_series(price_series.fillna(s_min), s_min, s_max).clip(0, 100)
-        else:
-            s_min = s_max = 0.0
-            normalized = pd.Series(0.0, index=price_series.index)
-        return NormalizedMetricRange(price_series, normalized, s_min, s_max)
-
-    def _normalize_economic_metric(self, series: pd.Series) -> NormalizedMetricRange:
-        """Normalise economic indicator values consistent with ``self.metric``.
-
-        Parameters
-        ----------
-        series : pandas.Series
-            Economic metric values for each polygon.
-
-        Returns
-        -------
-        NormalizedMetricRange
-            Original values, normalised scores, and computed bounds.
-        """
-        if self.metric == "EI":
-            normalized = series.clip(lower=0, upper=100).fillna(0.0)
-            return NormalizedMetricRange(series, normalized, math.nan, math.nan)
-
-        valid = series.notna()
-        if valid.any():
-            e_min, e_max = nanminmax(series[valid])
-            if self.metric in {"NPV", "ROI"}:
-                bound = max(abs(e_min), abs(e_max))
-                e_min, e_max = -bound, bound
-            normalized = normalize_series(series.fillna(e_min), e_min, e_max).clip(0, 100)
-        else:
-            e_min = e_max = 0.0
-            normalized = pd.Series(0.0, index=series.index)
-        return NormalizedMetricRange(series, normalized, e_min, e_max)
 
     @staticmethod
     def _aggregate_cashflows(cashflows: Sequence[Sequence[float]]) -> list[float]:
@@ -488,49 +627,12 @@ class InvestmentAttractivenessAnalyzer:
             for i in range(max_len)
         ]
 
-    def _resolve_weights(
-        self, land_use_series: pd.Series
-    ) -> tuple[pd.Series, pd.Series, float, float]:
-        """Map land-use categories to spatial/economic weights.
-
-        Parameters
-        ----------
-        land_use_series : pandas.Series
-            Series of land-use labels per polygon.
-
-        Returns
-        -------
-        tuple[pandas.Series, pandas.Series, float, float]
-            Spatial weights, economic weights, and their respective means.
-        """
-        def _to_enum(value: Any) -> LandUse | None:
-            try:
-                return self._coerce_land_use(value)
-            except Exception:
-                return None
-
-        spatial_lookup = {lu: weights[0] for lu, weights in self._weights_enum.items()}
-        economic_lookup = {lu: weights[1] for lu, weights in self._weights_enum.items()}
-
-        enum_series = land_use_series.map(_to_enum)
-        spatial_mapped = enum_series.map(spatial_lookup)
-        economic_mapped = enum_series.map(economic_lookup)
-
-        # Use the average of present weights for project-level aggregation; fall back to
-        # overall lookup mean (or 0.5) when no valid values are present.
-        ws_mean_lookup = float(np.mean(list(spatial_lookup.values()))) if spatial_lookup else 0.5
-        we_mean_lookup = float(np.mean(list(economic_lookup.values()))) if economic_lookup else 0.5
-        ws_mean = float(np.nanmean(spatial_mapped)) if spatial_mapped.notna().any() else ws_mean_lookup
-        we_mean = float(np.nanmean(economic_mapped)) if economic_mapped.notna().any() else we_mean_lookup
-
-        spatial_weights = spatial_mapped.fillna(ws_mean)
-        economic_weights = economic_mapped.fillna(we_mean)
-        return spatial_weights, economic_weights, ws_mean, we_mean
-
     def calculate_investment_metrics(
         self,
         gdf: gpd.GeoDataFrame | pd.DataFrame,
         discount_rate: float | None = None,
+        show_project_totals: bool = True,
+        show_warning: bool = True,
     ) -> pd.DataFrame:
         """Return a per-land-use summary of investment metrics.
 
@@ -543,6 +645,12 @@ class InvestmentAttractivenessAnalyzer:
             Discount rate to use when benchmark profiles omit one. Falls back to
             the analyzer's configured rate (and ultimately
             ``DEFAULT_DISCOUNT_RATE``) when ``None``.
+        show_project_totals : bool, optional
+            Whether to print aggregated project totals and project-level metrics.
+            Defaults to ``True``.
+        show_warning : bool, optional
+            Whether to emit warning logs (for example when rows have missing
+            ``land_use``). Defaults to ``True``.
 
         Returns
         -------
@@ -560,7 +668,11 @@ class InvestmentAttractivenessAnalyzer:
             return pd.DataFrame(columns=SUMMARY_COLUMNS)
 
         needs_preparation = isinstance(gdf, gpd.GeoDataFrame) or "geometry" in gdf.columns
-        working = prepare_investment_input(gdf) if needs_preparation else gdf.copy()
+        working = (
+            prepare_investment_input(gdf, show_warning=show_warning)
+            if needs_preparation
+            else gdf.copy()
+        )
         if "land_use" not in working.columns:
             raise ValueError("Expected 'land_use' column in prepared data.")
 
@@ -573,7 +685,7 @@ class InvestmentAttractivenessAnalyzer:
         )
         missing_land_use = land_use_series.isna() | normalized_land_use.isin({"", "none"})
         missing_count = int(missing_land_use.sum())
-        if missing_count:
+        if missing_count and show_warning:
             total = int(len(working))
             logger.warning(
                 "calculate_investment_metrics: {} из {} кварталов без land-use; "
@@ -590,11 +702,8 @@ class InvestmentAttractivenessAnalyzer:
         )
         self._coerce_numeric_columns(working, INVESTMENT_NUMERIC_COLUMNS)
 
-        if "land_value_before" not in working.columns:
-            working["land_value_before"] = working.get("land_value", np.nan)
         if "land_value" not in working.columns:
-            working["land_value"] = working.get("land_value_before", np.nan)
-        working["land_value_before"] = pd.to_numeric(working["land_value_before"], errors="coerce")
+            working["land_value"] = np.nan
         working["land_value"] = pd.to_numeric(working["land_value"], errors="coerce")
 
         row_results = [
@@ -605,7 +714,7 @@ class InvestmentAttractivenessAnalyzer:
         raw_to_final = {
             "ECON_NPV": "NPV",
             "ECON_IRR": "IRR",
-            "ECON_ROI": "ROI",
+            "ECON_PI": "PI",
             "ECON_PP_years": "PP_years",
             "ECON_EI": "EI",
         }
@@ -613,6 +722,7 @@ class InvestmentAttractivenessAnalyzer:
             "land_area": "land_area",
             "built_area": "built_area",
             "land_value": "land_cost_total",
+            "demolition_cost": "demolition_cost",
             "construction_cost": "construction_cost",
             "investment_need": "investment_need",
         }
@@ -625,7 +735,7 @@ class InvestmentAttractivenessAnalyzer:
                     {raw: getattr(result.metrics, attr) for raw, attr in {
                         "ECON_NPV": "npv",
                         "ECON_IRR": "irr",
-                        "ECON_ROI": "roi",
+                        "ECON_PI": "profitability_index",
                         "ECON_PP_years": "payback_years",
                         "ECON_EI": "economic_index",
                     }.items()}
@@ -652,31 +762,9 @@ class InvestmentAttractivenessAnalyzer:
         for raw_col, final_col in raw_to_final.items():
             working[final_col] = working[raw_col]
 
-        price_series = (
-            pd.to_numeric(working[DEFAULT_IP_VALUE], errors="coerce")
-            if DEFAULT_IP_VALUE in working.columns
-            else pd.Series(0.0, index=working.index)
-        )
-        price_series_valid = price_series.where(valid_mask)
-        spatial_range = self._normalize_spatial_metric(price_series_valid)
-        spatial_normalized = spatial_range.normalized.where(valid_mask)
-        working["spatial_potential"] = spatial_range.values
-
-        econ_metric_col = f"ECON_{self.metric}"
-        if econ_metric_col not in working.columns:
-            raise ValueError(f"Economic metric '{self.metric}' is not available")
-        econ_values = pd.to_numeric(working[econ_metric_col], errors="coerce")
-        econ_values_valid = econ_values.where(valid_mask)
-        economic_range = self._normalize_economic_metric(econ_values_valid)
-        economic_normalized = economic_range.normalized.where(valid_mask)
-
-        spatial_weights, economic_weights, ws_mean, we_mean = self._resolve_weights(working["land_use"])
-        inv_series = spatial_weights * spatial_normalized + economic_weights * economic_normalized
-        working["INV"] = inv_series.round(2)
-
         summary = working.reindex(columns=SUMMARY_COLUMNS).copy()
         columns_to_null = [
-            col for col in ("INV", "spatial_potential", "NPV", "IRR", "ROI", "PP_years", "EI")
+            col for col in ("NPV", "IRR", "PI", "PP_years", "EI")
             if col in summary.columns
         ]
         if columns_to_null:
@@ -684,7 +772,11 @@ class InvestmentAttractivenessAnalyzer:
 
         project_cf = self._aggregate_cashflows(result.cashflow for result in row_results)
         project_metrics = (
-            InvestmentMetricsResult.from_cashflow(project_cf, base_discount_rate)
+            InvestmentMetricsResult.from_cashflow(
+                project_cf,
+                base_discount_rate,
+                compute_ei=False,
+            )
             if project_cf
             else None
         )
@@ -692,91 +784,67 @@ class InvestmentAttractivenessAnalyzer:
         land_area_series = summary["land_area"] if "land_area" in summary.columns else pd.Series(0.0, index=summary.index)
         built_area_series = summary["built_area"] if "built_area" in summary.columns else pd.Series(0.0, index=summary.index)
         land_value_series = summary["land_value"] if "land_value" in summary.columns else pd.Series(0.0, index=summary.index)
+        demolition_cost_series = summary["demolition_cost"] if "demolition_cost" in summary.columns else pd.Series(0.0, index=summary.index)
         construction_cost_series = summary["construction_cost"] if "construction_cost" in summary.columns else pd.Series(0.0, index=summary.index)
         investment_need_series = summary["investment_need"] if "investment_need" in summary.columns else pd.Series(0.0, index=summary.index)
-
         total_area = land_area_series.loc[valid_mask].sum(skipna=True)
         total_built = built_area_series.loc[valid_mask].sum(skipna=True)
         total_land_value = land_value_series.loc[valid_mask].sum(skipna=True)
+        total_demolition_cost = demolition_cost_series.loc[valid_mask].sum(skipna=True)
         total_construction_cost = construction_cost_series.loc[valid_mask].sum(skipna=True)
         total_investment_need = investment_need_series.loc[valid_mask].sum(skipna=True)
 
-        s_project = np.nan
-        if total_area > 0 and price_series_valid.notna().any():
-            weighted = price_series_valid * land_area_series
-            s_project = float(weighted.sum(skipna=True) / total_area)
-
-        e_project_val = np.nan
-        e_norm_project = 0.0
-        if project_metrics is not None:
-            if self.metric == "EI":
-                e_project_val = project_metrics.economic_index
-                if np.isfinite(e_project_val):
-                    e_norm_project = float(np.clip(e_project_val, 0, 100))
-            else:
-                metric_attr = {
-                    "NPV": "npv",
-                    "IRR": "irr",
-                    "ROI": "roi",
-                    "PP_years": "payback_years",
-                }.get(self.metric, "npv")
-                e_project_val = getattr(project_metrics, metric_attr)
-                if (
-                    np.isfinite(e_project_val)
-                    and economic_range.has_valid
-                    and economic_range.maximum > economic_range.minimum
-                ):
-                    e_norm_project = float(
-                        np.clip(
-                            100
-                            * (e_project_val - economic_range.minimum)
-                            / (economic_range.maximum - economic_range.minimum),
-                            0,
-                            100,
-                        )
-                    )
-
-        if (
-            np.isfinite(s_project)
-            and spatial_range.has_valid
-            and spatial_range.maximum > spatial_range.minimum
-        ):
-            s_norm_project = float(
-                np.clip(
-                    100
-                    * (s_project - spatial_range.minimum)
-                    / (spatial_range.maximum - spatial_range.minimum),
-                    0,
-                    100,
-                )
-            )
-        else:
-            s_norm_project = 0.0
-
-        inv_project = ws_mean * s_norm_project + we_mean * e_norm_project
-
-        currency_columns = {"land_value_before", "land_value", "construction_cost", "investment_need", "NPV"}
+        currency_columns = {"land_value", "demolition_cost", "construction_cost", "investment_need", "NPV"}
         numeric_cols = summary.select_dtypes(include=[np.number]).columns
         for col in numeric_cols:
             summary[col] = self._round_clean(summary[col], decimals=2)
             if col in currency_columns:
                 summary[col] = summary[col].astype(float)
 
-        print("Project totals:")
-        print(f" • Land area:          {total_area:,.2f}")
-        print(f" • Built area:         {total_built:,.2f}")
-        print(f" • Land value:         {total_land_value:,.2f}")
-        print(f" • Construction cost:  {total_construction_cost:,.2f}")
-        print(f" • Investment need:    {total_investment_need:,.2f}")
-        print(f" • Spatial potential:  {s_project:,.2f}" if np.isfinite(s_project) else " • Spatial potential:  n/a")
-        if project_metrics is not None:
-            print(f" • Project NPV:        {project_metrics.npv:,.2f}")
-            print(f" • Project IRR:        {project_metrics.irr:,.2f}")
-            print(f" • Project ROI:        {project_metrics.roi:,.2f}")
-            print(f" • Project PP (yrs):   {project_metrics.payback_years:,.2f}")
-            print(f" • Project EI:         {project_metrics.economic_index:,.2f}")
-            print(f" • Project INV score:  {inv_project:,.2f}")
-        else:
-            print(" • Project metrics:    not available (no cashflows)")
+        if show_project_totals:
+            print("Project totals:")
+            print(f" • Land area:          {total_area:,.2f}")
+            print(f" • Built area:         {total_built:,.2f}")
+            print(f" • Land value:         {total_land_value:,.2f}")
+            print(f" • Demolition cost:    {total_demolition_cost:,.2f}")
+            print(f" • Construction cost:  {total_construction_cost:,.2f}")
+            print(f" • Investment need:    {total_investment_need:,.2f}")
+            if project_metrics is not None:
+                print(f" • Project NPV:        {project_metrics.npv:,.2f}")
+                print(f" • Project IRR:        {project_metrics.irr:,.2f}")
+                print(f" • Project PI:         {project_metrics.profitability_index:,.2f}")
+                print(f" • Project PP (yrs):   {project_metrics.payback_years:,.2f}")
+            else:
+                print(" • Project metrics:    not available (no cashflows)")
 
         return summary
+
+
+def calculate_investment_metrics(
+    gdf: gpd.GeoDataFrame | pd.DataFrame,
+    benchmarks: Mapping[str | LandUse, Mapping[str, Any]] | None = None,
+    *,
+    weights_dict: Mapping[str | LandUse, Sequence[float]] | None = None,
+    econ_metric: str = DEFAULT_ECON_METRIC,
+    discount_rate: float | None = None,
+    show_project_totals: bool = True,
+    show_warning: bool = True,
+) -> pd.DataFrame:
+    """Convenience wrapper returning investment summary from raw scenario blocks.
+
+    Accepts the original scenario GeoDataFrame (for example ``blocks_full_value``),
+    prepares it internally with :func:`prepare_investment_input`, and returns the
+    same summary table as :meth:`InvestmentAttractivenessAnalyzer.calculate_investment_metrics`.
+    """
+    analyzer = InvestmentAttractivenessAnalyzer(
+        benchmarks=benchmarks,
+        weights_dict=weights_dict,
+        econ_metric=econ_metric,
+        discount_rate=discount_rate,
+    )
+    return analyzer.calculate_investment_metrics(
+        gdf,
+        discount_rate=discount_rate,
+        show_project_totals=show_project_totals,
+        show_warning=show_warning,
+    )

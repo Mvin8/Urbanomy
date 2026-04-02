@@ -21,7 +21,7 @@ class LandPriceEstimator:
     ----------
     model : object
         Fitted regression model exposing a ``predict`` method that accepts a
-        pandas DataFrame and returns price predictions in logarithmic scale.
+        pandas DataFrame and returns unit-price predictions.
     blocks : geopandas.GeoDataFrame
         Blocks dataset containing the geometry and all required base features.
     radius_list : Sequence[float], optional
@@ -100,16 +100,58 @@ class LandPriceEstimator:
         Returns
         -------
         geopandas.GeoDataFrame
-            Copy of the original blocks with an extra ``land_value`` column in
-            the original monetary scale.
+            Copy of the original blocks with one extra column:
+            ``land_value``.
         """
+        return self.predict_prices(
+            include_unit_price=False,
+            predictions_in_log_scale=True,
+        )
 
+    def predict_prices(
+        self,
+        *,
+        unit_price_column: str = "land_value_per_sqm",
+        total_price_column: str = "land_value",
+        area_column: str = "site_area",
+        predictions_in_log_scale: bool = False,
+        include_unit_price: bool = True,
+    ) -> gpd.GeoDataFrame:
+        """Generate total and unit land value predictions.
+
+        Parameters
+        ----------
+        unit_price_column : str, optional
+            Output column for unit price predictions (rub/sqm), calculated as
+            ``total_price_column / area_column``.
+        total_price_column : str, optional
+            Output column for total block value predicted by the model.
+        area_column : str, optional
+            Area column used to convert total value to unit price.
+        predictions_in_log_scale : bool, optional
+            When ``True``, applies ``np.expm1`` to model outputs
+            (inverse transform for ``log1p`` targets).
+        include_unit_price : bool, optional
+            When ``True``, computes ``unit_price_column`` as
+            ``total_price_column / area_column``.
+        """
         design_matrix = self._design_matrix(self._blocks)
         design_matrix = self._align_features_to_model(design_matrix)
-        y_log = self.model.predict(design_matrix)
+        y_pred = np.asarray(self.model.predict(design_matrix)).reshape(-1)
+        if predictions_in_log_scale:
+            y_pred = np.expm1(y_pred)
 
         blocks_pred = self._blocks.copy()
-        blocks_pred["land_value"] = np.exp(y_log)
+        blocks_pred[total_price_column] = y_pred
+
+        if include_unit_price:
+            if area_column not in blocks_pred.columns:
+                raise ValueError(
+                    f"Cannot compute '{unit_price_column}': area column '{area_column}' is missing."
+                )
+            area = pd.to_numeric(blocks_pred[area_column], errors="coerce")
+            total = pd.to_numeric(blocks_pred[total_price_column], errors="coerce")
+            blocks_pred[unit_price_column] = np.where(area > 0, total / area, np.nan)
         return blocks_pred
 
     def _build_distance_weights(self) -> Mapping[float, DistanceBand]:
@@ -157,6 +199,28 @@ class LandPriceEstimator:
 
         lag_features = self._compute_lag_features(blocks)
         return pd.concat([base, lag_features], axis=1)
+
+    def _align_features_to_model(self, design_matrix: pd.DataFrame) -> pd.DataFrame:
+        """Align feature order with model metadata when available."""
+        model_feature_names = getattr(self.model, "feature_names_", None)
+        if not model_feature_names:
+            return design_matrix
+
+        expected = list(model_feature_names)
+        actual = list(design_matrix.columns)
+
+        missing = [name for name in expected if name not in design_matrix.columns]
+        extra = [name for name in actual if name not in model_feature_names]
+        if missing or extra:
+            details = []
+            if missing:
+                details.append("missing in design matrix: " + ", ".join(missing[:10]))
+            if extra:
+                details.append("not used by model: " + ", ".join(extra[:10]))
+            raise ValueError(
+                "Feature mismatch between model and estimator input (" + "; ".join(details) + ")"
+            )
+        return design_matrix.loc[:, expected]
     
     @staticmethod
     def _categorical_token(value: Any) -> str:
@@ -245,6 +309,15 @@ class LandPriceEstimator:
         ValueError
             If any of ``orig_features`` are missing from ``self._blocks``.
         """
+        missing_categorical = [
+            feature for feature in self._categorical_features if feature not in self._orig_features
+        ]
+        if missing_categorical:
+            raise ValueError(
+                "categorical_features must be a subset of orig_features. "
+                "Missing from orig_features: " + ", ".join(sorted(missing_categorical))
+            )
+
         missing_columns = [feature for feature in self._orig_features if feature not in self._blocks.columns]
         if missing_columns:
             raise ValueError(

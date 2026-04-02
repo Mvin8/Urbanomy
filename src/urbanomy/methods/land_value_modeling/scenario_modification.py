@@ -8,15 +8,19 @@ import geopandas as gpd
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+import copy
+import random
 from geopandas import GeoDataFrame
 from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
 from matplotlib.transforms import offset_copy
-
+from blocksnet.analysis.indicators import calculate_density_indicators
+from blocksnet.analysis.morphotypes import get_strelka_morphotypes
 from blocksnet.enums import LandUse
 
 from .constants import (
     BlockColumn,
+    DEFAULT_SQM_PER_PERSON,
     ScenarioResultKey,
 )
 
@@ -41,16 +45,24 @@ class ScenarioTEPModifier:
         """
         self._blocks = blocks
 
-    def apply(self, target_idx: int, changes: Mapping[str, Any]) -> GeoDataFrame:
+    def apply(
+        self,
+        target_id: Any,
+        changes: Mapping[str, Any],
+        *,
+        target_id_column: str = BlockColumn.ID.value,
+    ) -> GeoDataFrame:
         """Return a modified copy of the blocks with updated TEP values.
 
         Parameters
         ----------
-        target_idx : int
-            Index of the block that should be modified.
+        target_id : Any
+            Value from ``target_id_column`` identifying the block to modify.
         changes : Mapping[str, object]
             Dictionary of field updates (e.g. ``{"land_use": LandUse.RESIDENTIAL}``
             or an equivalent string token).
+        target_id_column : str, optional
+            Name of the identifier column used to locate the target block.
 
         Returns
         -------
@@ -59,10 +71,10 @@ class ScenarioTEPModifier:
         """
 
         df = self._blocks.copy()
-        if target_idx not in df.index:
-            raise KeyError(f"Block index {target_idx} is not present in the dataset.")
+        resolved_index = self._resolve_target_index(df, target_id, target_id_column)
 
-        row = df.loc[target_idx].to_dict()
+        original_row = df.loc[resolved_index].copy()
+        row = original_row.to_dict()
         normalised_changes = dict(changes)
 
         land_use_key = BlockColumn.LAND_USE.value
@@ -80,23 +92,23 @@ class ScenarioTEPModifier:
         population_key = BlockColumn.POPULATION.value
         share_key = BlockColumn.SHARE.value
         residential_key = BlockColumn.RESIDENTIAL.value
-        share_living_key = BlockColumn.SHARE_LIVING.value
-        share_non_living_key = BlockColumn.SHARE_NON_LIVING.value
+        site_area = float(row.get(site_area_key, df.at[resolved_index, site_area_key]))
 
-        site_area = float(row.get(site_area_key, df.at[target_idx, site_area_key]))
-
-        build = float(row.get(build_key, df.at[target_idx, build_key]))
-        live = float(row.get(living_key, df.at[target_idx, living_key]))
+        build = float(row.get(build_key, df.at[resolved_index, build_key]))
+        live = float(row.get(living_key, df.at[resolved_index, living_key]))
         non = row.get(non_living_key, np.nan)
 
+        build = max(build, 0.0)
+        if living_key not in changes and ((mxi_key in changes) or (mxi_key in row)):
+            mxi = float(row.get(mxi_key, df.at[resolved_index, mxi_key]))
+            mxi = float(np.clip(mxi, 0.0, 1.0))
+            live = mxi * build
+        live = float(np.clip(live, 0.0, build))
+
         if not np.isfinite(non):
-            if build_key in changes and living_key in changes:
-                non = max(build - live, 0.0)
-            elif (mxi_key in changes) or (mxi_key in row):
-                mxi = float(row.get(mxi_key, df.at[target_idx, mxi_key]))
-                non = max(mxi * build, 0.0)
-            else:
-                non = float(df.at[target_idx, non_living_key])
+            non = max(build - live, 0.0)
+        else:
+            non = max(float(non), 0.0)
 
         if (non_living_key in changes and living_key in changes) and (build_key not in changes):
             build = live + float(non)
@@ -105,24 +117,54 @@ class ScenarioTEPModifier:
         row[living_key] = live
         row[non_living_key] = float(non)
 
-        footprint = float(row.get(footprint_key, df.at[target_idx, footprint_key]))
-        population = float(row.get(population_key, df.at[target_idx, population_key]))
+        footprint = float(row.get(footprint_key, df.at[resolved_index, footprint_key]))
+        row[population_key] = live / DEFAULT_SQM_PER_PERSON if DEFAULT_SQM_PER_PERSON > 0 else 0.0
 
         row[BlockColumn.FSI.value] = build / site_area if site_area > 0 else np.nan
         row[BlockColumn.GSI.value] = footprint / site_area if site_area > 0 else np.nan
-        row[mxi_key] = (row[non_living_key] / build) if build > 0 else 0.0
-        row[BlockColumn.L.value] = (build / population) if population > 0 else np.nan
-        row[BlockColumn.OSR.value] = (site_area - footprint) / site_area if site_area > 0 else np.nan
-        row[share_living_key] = live / site_area if site_area > 0 else np.nan
-        row[share_non_living_key] = row[non_living_key] / site_area if site_area > 0 else np.nan
+        row[mxi_key] = (row[living_key] / build) if build > 0 else np.nan
+        row[BlockColumn.L.value] = (build / footprint) if footprint > 0 else np.nan
+        # row[BlockColumn.OSR.value] = (site_area - footprint) / site_area if site_area > 0 else np.nan
 
         if residential_key in normalised_changes and share_key not in normalised_changes:
             row[share_key] = float(row[residential_key])
 
+        # Preserve pre-scenario values needed for demolition-cost estimates.
+        row["land_use_before"] = original_row.get("land_use_before", original_row.get(land_use_key))
+        row["build_floor_area_before"] = original_row.get(
+            "build_floor_area_before",
+            original_row.get(build_key),
+        )
+
         for key, value in row.items():
-            df.at[target_idx, key] = value
+            df.at[resolved_index, key] = value
+
+        # Keep morphotype consistent with the updated block TEP.
+        try:
+            morphotypes = get_strelka_morphotypes(df)
+            if "morphotype" in morphotypes.columns and resolved_index in morphotypes.index:
+                df.at[resolved_index, "morphotype"] = morphotypes.at[resolved_index, "morphotype"]
+        except Exception:
+            # Do not break scenario application if morphotype recomputation fails.
+            pass
 
         return df
+
+    @staticmethod
+    def _resolve_target_index(df: GeoDataFrame, target_id: Any, target_id_column: str) -> Any:
+        if target_id_column not in df.columns:
+            raise KeyError(f"Target id column {target_id_column!r} is not present in the dataset.")
+
+        matches = df.index[df[target_id_column] == target_id]
+        if len(matches) == 0:
+            raise KeyError(
+                f"Block with {target_id_column}={target_id!r} is not present in the dataset."
+            )
+        if len(matches) > 1:
+            raise ValueError(
+                f"Multiple blocks found for {target_id_column}={target_id!r}; the identifier must be unique."
+            )
+        return matches[0]
 
     @staticmethod
     def _coerce_land_use(value: Any) -> LandUse:
@@ -150,7 +192,6 @@ class ScenarioTEPModifier:
         except KeyError as exc:
             raise ValueError(f"Unknown land_use value: {value!r}") from exc
 
-
 def plot_scenario_impact(
     *,
     blocks: GeoDataFrame,
@@ -165,6 +206,7 @@ def plot_scenario_impact(
     figsize: tuple[float, float] | None = None,
     show: bool = True,
     print_summary: bool = True,
+    print_quarter_stats: bool = True,
 ) -> Dict[str, object]:
     """Визуализировать и вывести статистику по уже рассчитанным изменениям цен.
 
@@ -240,6 +282,7 @@ def plot_scenario_impact(
             total_summary=summary_all,
             total_count=int(len(clipped)),
             target_idx=resolved_target_idx,
+            print_quarter_stats=print_quarter_stats,
         )
 
     return {
@@ -634,6 +677,7 @@ def _print_summary(
     total_count: int | None = None,
     target_idx: int | None = None,
     project_column: str = BlockColumn.IS_PROJECT.value,
+    print_quarter_stats: bool = True,
 ) -> None:
     """Print human-readable summaries of scenario-induced price changes.
 
@@ -673,40 +717,44 @@ def _print_summary(
             f"{_fmt_pct(row['d_pct'])}"
         )
 
-    threshold_note = f" (|Δ₽| > {eps:g})" if eps > 0 else ""
-    print(f"\nСтатистика по кварталам в контексте{threshold_note}:")
     land_use_key = BlockColumn.LAND_USE.value
+    project_mask = pd.Series(False, index=gdf.index, dtype=bool)
 
     if len(gdf):
         project_mask = pd.Series(gdf.get(project_column, False), index=gdf.index).fillna(False).astype(bool)
 
-        print("\nИзменяемый квартал:")
-        print("index | land_use | до (₽) → после (₽) | Δ₽ | Δ%")
-        if target_idx is not None and target_idx in gdf.index:
-            _print_row(target_idx, gdf.loc[target_idx])
-        else:
-            print("—")
+    if print_quarter_stats:
+        threshold_note = f" (|Δ₽| > {eps:g})" if eps > 0 else ""
+        print(f"\nСтатистика по кварталам в контексте{threshold_note}:")
 
-        project_rows = gdf[project_mask].drop(index=target_idx, errors="ignore")
-        context_rows = gdf[~project_mask].drop(index=target_idx, errors="ignore")
-
-        print("\nКварталы в границах проекта:")
-        if len(project_rows):
+        if len(gdf):
+            print("\nИзменяемый квартал:")
             print("index | land_use | до (₽) → после (₽) | Δ₽ | Δ%")
-            for idx, row in project_rows.iterrows():
-                _print_row(idx, row)
-        else:
-            print("Нет кварталов проекта с изменениями выше порога.")
+            if target_idx is not None and target_idx in gdf.index:
+                _print_row(target_idx, gdf.loc[target_idx])
+            else:
+                print("—")
 
-        print("\nКварталы в контексте:")
-        if len(context_rows):
-            print("index | land_use | до (₽) → после (₽) | Δ₽ | Δ%")
-            for idx, row in context_rows.iterrows():
-                _print_row(idx, row)
+            project_rows = gdf[project_mask].drop(index=target_idx, errors="ignore")
+            context_rows = gdf[~project_mask].drop(index=target_idx, errors="ignore")
+
+            print("\nКварталы в границах проекта:")
+            if len(project_rows):
+                print("index | land_use | до (₽) → после (₽) | Δ₽ | Δ%")
+                for idx, row in project_rows.iterrows():
+                    _print_row(idx, row)
+            else:
+                print("Нет кварталов проекта с изменениями выше порога.")
+
+            print("\nКварталы в контексте:")
+            if len(context_rows):
+                print("index | land_use | до (₽) → после (₽) | Δ₽ | Δ%")
+                for idx, row in context_rows.iterrows():
+                    _print_row(idx, row)
+            else:
+                print("Нет кварталов контекста с изменениями выше порога.")
         else:
-            print("Нет кварталов контекста с изменениями выше порога.")
-    else:
-        print("Нет кварталов, у которых стоимость изменилась выше порога.")
+            print("Нет кварталов, у которых стоимость изменилась выше порога.")
 
     target_rows = gdf.loc[[target_idx]] if target_idx is not None and target_idx in gdf.index else gdf.iloc[0:0]
     project_rows = gdf[project_mask].drop(index=target_idx, errors="ignore")

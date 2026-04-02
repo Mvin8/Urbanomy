@@ -83,15 +83,26 @@ class SEREstimator:
         # merge defaults and user-specified parameters
         self.cfg = self._merge_parameters(self.DEFAULT_PARAMETERS, params)
         population = int(self.cfg['population'])
+        if population <= 0:
+            raise ValueError("'population' must be a positive integer.")
         employment_base = self.cfg.get('employment_base')
         if employment_base is None:
             share = float(self.cfg.get('employment_share', DEFAULT_EMPLOYMENT_SHARE))
+            if not (0.0 <= share <= 1.0):
+                raise ValueError("'employment_share' must be within [0, 1].")
             employment_base = int(population * share)
             self.cfg['employment_share'] = share
         else:
             employment_base = int(employment_base)
+            if employment_base < 0:
+                raise ValueError("'employment_base' must be non-negative.")
         self.cfg['population'] = population
         self.cfg['employment_base'] = employment_base
+
+        construction_period_years = float(self.cfg.get('construction_period_years', 1.0))
+        if construction_period_years <= 0:
+            raise ValueError("'construction_period_years' must be > 0.")
+        self.cfg['construction_period_years'] = construction_period_years
 
     @staticmethod
     def _normalise_land_use_label(value: Any) -> str:
@@ -166,6 +177,11 @@ class SEREstimator:
             Aggregated land-use table with totals for areas, investments and
             optional land-cost information.
         """
+        required = {'land_use', 'built_area'}
+        missing = sorted(col for col in required if col not in df.columns)
+        if missing:
+            raise KeyError(f"Input data is missing required columns: {missing}")
+
         data = df.copy()
 
         numeric_cols = [
@@ -338,15 +354,16 @@ class SEREstimator:
         pandas.DataFrame
             Table with columns ``indicator`` and ``delta_total`` containing
             the five key metrics, where construction effects are treated as
-            one-off project contributions and operational effects remain
-            annual.
+            one-off project contributions. For GRP and budget, construction
+            effects are annualized using ``construction_period_years`` before
+            summation with annual operational effects.
         """
         c = self.cfg
         population = int(c['population'])
         employment_base = int(c['employment_base'])
         wage_base = float(c['avg_wage_base'])
+        construction_period_years = float(c.get('construction_period_years', 1.0))
 
-        population_safe = population if population > 0 else 1
         pit = float(c['tax_rates'].get('pit', DEFAULT_TAX_RATES['pit']))
         cit = float(c['tax_rates'].get('cit', DEFAULT_TAX_RATES['cit']))
         prop = float(c['tax_rates'].get('prop', DEFAULT_TAX_RATES['prop']))
@@ -356,23 +373,25 @@ class SEREstimator:
 
         # Metric 1: Delta investment in fixed capital per capita (project scope)
         i_total = g['I'].sum()
-        delta_invcap_pc_total = i_total / population_safe
+        delta_invcap_pc_total = i_total / population
 
         # Metric 2: Delta gross regional product per capita
         self._assign_land_use_metric(g, 'k_va_build', c.get('va_coeff_build', {}), 0.0)
         va_build_total = (g['I'] * g['k_va_build']).sum()
-        delta_grp_pc_build = va_build_total / population_safe
+        # Construction contribution is one-off, annualized for comparability with operations.
+        va_build_annual = va_build_total / construction_period_years
+        delta_grp_pc_build_annual = va_build_annual / population
 
         self._assign_land_use_metric(g, 'y_m2', c.get('va_per_m2_ops', {}), DEFAULT_VA_PER_M2_OPS['default'])
         va_ops_annual = (g['A'] * g['y_m2']).sum()
-        delta_grp_pc_ops = va_ops_annual / population_safe
-        delta_grp_pc_project = delta_grp_pc_build + delta_grp_pc_ops
+        delta_grp_pc_ops = va_ops_annual / population
+        delta_grp_pc_project = delta_grp_pc_build_annual + delta_grp_pc_ops
 
         # Metric 3: Delta budget revenues
         wages_build_total = i_total * float(c['build_wage_share'])
-        pit_build_total = wages_build_total * 12 * pit
+        pit_build_total = wages_build_total * pit
         cit_build_total = i_total * float(c['build_profit_margin']) * cit
-        delta_budget_build = pit_build_total + cit_build_total
+        delta_budget_build_annual = (pit_build_total + cit_build_total) / construction_period_years
 
         self._assign_land_use_metric(g, 'jobs_m2', c.get('jobs_per_m2', {}), DEFAULT_JOBS_PER_M2['default'])
         g['jobs'] = g['A'] * g['jobs_m2']
@@ -393,7 +412,7 @@ class SEREstimator:
 
         land_tax_delta = self._land_tax_delta(g, land_tax)
         delta_budget_ops = pit_ops_annual + cit_ops_annual + property_tax_annual + land_tax_delta
-        delta_budget_total = delta_budget_build + delta_budget_ops
+        delta_budget_total = delta_budget_build_annual + delta_budget_ops
 
         # Metric 4: Delta average wage during operations
         jobs_new = g['jobs'].sum()

@@ -10,6 +10,7 @@ from .district_optimization_session import (
     latest_session_summary,
     resolve_constraints,
     run_optimization_session,
+    run_optimization_session_nsga3,
 )
 from .district_optimization_solution import (
     build_blocks_full_value_for_solution,
@@ -30,4 +31,5 @@ __all__ = [
     "resolve_constraints",
     "resolve_solution_row",
     "run_optimization_session",
+    "run_optimization_session_nsga3",
 ]

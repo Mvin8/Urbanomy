@@ -8,13 +8,18 @@ import numpy as np
 import pandas as pd
 
 from urbanomy.methods.land_value_modeling import build_pareto_front_dataframe
-from urbanomy.methods.land_value_modeling.ga_mc_optimizer import DistrictProblem
+from urbanomy.methods.land_value_modeling.ga_mc_optimizer import (
+    DistrictProblem,
+    StrategicAlignmentScorer,
+    build_nsga3_reference_directions,
+)
 
 from ...models import DistrictOptimizationConfig, DistrictOptimizationSession
 from .district_optimization_formatting import json_value
 
 try:
     from pymoo.algorithms.moo.nsga2 import NSGA2
+    from pymoo.algorithms.moo.nsga3 import NSGA3
     from pymoo.optimize import minimize
 except ImportError as exc:
     raise ImportError(
@@ -105,6 +110,90 @@ def run_optimization_session(
     )
 
 
+def run_optimization_session_nsga3(
+    *,
+    blocks,
+    config: DistrictOptimizationConfig,
+    target_id: int,
+    llm: Any,
+    strategic_goals: str,
+    pop_size: int | None = None,
+    n_gen: int | None = None,
+    seed: int | None = None,
+    ref_dir_partitions: int | None = None,
+    scorer_max_retries: int = 2,
+) -> DistrictOptimizationSession:
+    """Run NSGA-III district optimization with LLM-based strategic alignment."""
+    site_area_series = pd.to_numeric(
+        blocks.loc[blocks[config.target_id_column] == target_id, "site_area"],
+        errors="coerce",
+    )
+    if site_area_series.empty or not np.isfinite(site_area_series.iloc[0]):
+        raise ValueError(f"Не удалось определить site_area для target_id={target_id}.")
+    site_area = float(site_area_series.iloc[0])
+
+    constraints = (
+        resolve_constraints(config.constraints_template, site_area=site_area)
+        if config.constraints_template
+        else build_default_constraints(site_area)
+    )
+    estimator_kwargs = {
+        "orig_features": list(config.orig_features),
+        "categorical_features": list(config.categorical_features),
+    }
+    if config.use_service_features is not None:
+        estimator_kwargs["use_service_features"] = bool(config.use_service_features)
+    if config.service_features is not None:
+        estimator_kwargs["service_features"] = list(config.service_features)
+
+    scorer = StrategicAlignmentScorer(
+        llm=llm,
+        strategic_goals=str(strategic_goals).strip(),
+        max_retries=int(scorer_max_retries),
+    )
+    problem = DistrictProblem(
+        blocks=blocks,
+        target_id=target_id,
+        model=config.model,
+        constraints=constraints,
+        estimator_kwargs=estimator_kwargs,
+        target_id_column=config.target_id_column,
+        strategic_alignment_scorer=scorer,
+    )
+    resolved_pop_size = int(pop_size or config.pop_size)
+    ref_dirs = build_nsga3_reference_directions(
+        n_obj=problem.n_obj,
+        pop_size=resolved_pop_size,
+        n_partitions=ref_dir_partitions,
+    )
+    algorithm = NSGA3(
+        ref_dirs=ref_dirs,
+        pop_size=max(resolved_pop_size, len(ref_dirs)),
+        eliminate_duplicates=bool(config.eliminate_duplicates),
+    )
+    result = minimize(
+        problem,
+        algorithm,
+        ("n_gen", int(n_gen or config.n_gen)),
+        seed=int(seed if seed is not None else config.seed),
+        verbose=bool(config.verbose),
+        save_history=bool(config.save_history),
+    )
+    pareto_front_df = build_pareto_front_dataframe(
+        res=result,
+        problem=problem,
+        use_history=bool(config.use_history),
+        scenario_prefix=config.scenario_prefix,
+    )
+    return DistrictOptimizationSession(
+        target_id=int(target_id),
+        site_area=site_area,
+        problem=problem,
+        result=result,
+        pareto_front_df=pareto_front_df,
+    )
+
+
 def latest_session_or_error(session_store: dict[str, Any]) -> DistrictOptimizationSession:
     """Return the latest optimization session or raise a clear error."""
     session = session_store.get("latest_district_optimization_session")
@@ -130,6 +219,7 @@ def latest_session_summary(session: DistrictOptimizationSession) -> dict[str, An
                 "land_value_after": json_value(row.get("land_value_after")),
                 "land_value_gain": json_value(row.get("land_value_gain")),
                 "investor_npv": json_value(row.get("investor_npv")),
+                "ser_alignment_score": json_value(row.get("ser_alignment_score")),
             }
         )
     return {

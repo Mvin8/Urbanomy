@@ -18,6 +18,12 @@ from .land_price_estimation import LandPriceEstimator, transfer_baseline_prices
 from .land_price_visualization import plot_land_price_maps
 from .pareto_front_dataframe import build_pareto_front_dataframe
 from .scenario_modification import ScenarioTEPModifier, plot_scenario_impact
+from .ga_mc_optimizer import (
+    DistrictProblem,
+    StrategicAlignmentScorer,
+    build_nsga3_reference_directions,
+    run_nsga3_with_strategic_alignment,
+)
 
 __all__ = [
     "CATEGORICAL_FEATURES",
@@ -33,6 +39,10 @@ __all__ = [
     "build_pareto_front_dataframe",
     "ScenarioTEPModifier",
     "plot_scenario_impact",
+    "DistrictProblem",
+    "StrategicAlignmentScorer",
+    "build_nsga3_reference_directions",
+    "run_nsga3_with_strategic_alignment",
 ]
 
 try:

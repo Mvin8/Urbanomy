@@ -30,6 +30,7 @@ def _scenario_summary_from_row(
     land_use: Any = None,
     land_value_gain: Any = None,
     investor_npv: Any = None,
+    ser_alignment_score: Any = None,
 ) -> str:
     """Build a compact text summary when an explicit summary column is absent."""
     parts = [title or f"Сценарий {scenario_id}"]
@@ -39,6 +40,11 @@ def _scenario_summary_from_row(
         parts.append(f"прирост стоимости земли={_format_money(land_value_gain)}")
     if investor_npv is not None:
         parts.append(f"NPV инвестора={_format_money(investor_npv)}")
+    if ser_alignment_score is not None:
+        try:
+            parts.append(f"SER score={float(ser_alignment_score):.2f}")
+        except (TypeError, ValueError):
+            pass
     return "; ".join(parts)
 
 
@@ -116,6 +122,14 @@ def build_pareto_front_dataframe(
         land_value_after = float(-f_row[0])
         land_value_gain = float(land_value_after - baseline_land_value)
         investor_npv = float(-f_row[1])
+        ser_alignment_score = float(-f_row[2]) if len(f_row) > 2 else None
+        strategic_alignment = None
+        if hasattr(problem, "lookup_strategic_alignment"):
+            strategic_alignment = problem.lookup_strategic_alignment(
+                params_repaired=params_repaired,
+                land_value_after=land_value_after,
+                investor_npv=investor_npv,
+            )
         title = f"{scenario_id} | {land_use_name}"
         summary = _scenario_summary_from_row(
             scenario_id=scenario_id,
@@ -123,19 +137,23 @@ def build_pareto_front_dataframe(
             land_use=land_use_name,
             land_value_gain=land_value_gain,
             investor_npv=investor_npv,
+            ser_alignment_score=ser_alignment_score,
         )
-        rows.append(
-            {
-                "scenario_id": scenario_id,
-                "title": title,
-                "summary": summary,
-                "land_use": land_use_name,
-                "land_value_after": land_value_after,
-                "land_value_gain": land_value_gain,
-                "investor_npv": investor_npv,
-                "params_repaired": _json_ready(params_repaired),
-            }
-        )
+        row = {
+            "scenario_id": scenario_id,
+            "title": title,
+            "summary": summary,
+            "land_use": land_use_name,
+            "land_value_after": land_value_after,
+            "land_value_gain": land_value_gain,
+            "investor_npv": investor_npv,
+            "params_repaired": _json_ready(params_repaired),
+        }
+        if ser_alignment_score is not None:
+            row["ser_alignment_score"] = ser_alignment_score
+        if strategic_alignment is not None:
+            row["ser_alignment_reasoning"] = str(strategic_alignment.get("reasoning", "")).strip()
+        rows.append(row)
 
     return pd.DataFrame(rows)
 

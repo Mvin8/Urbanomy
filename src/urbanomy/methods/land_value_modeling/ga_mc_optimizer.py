@@ -667,3 +667,53 @@ def run_nsga3_with_strategic_alignment(
         save_history=bool(save_history),
     )
     return result, problem
+
+
+def run_nsga2_with_strategic_alignment(
+    *,
+    blocks: GeoDataFrame,
+    model: CatBoostRegressor,
+    estimator_kwargs: Dict[str, Any],
+    constraints: Dict[str, Dict[str, Any]],
+    target_id: Any,
+    llm: Any,
+    strategic_goals: str,
+    benchmarks: Mapping[LandUse, Dict[str, Any]] | None = None,
+    target_id_column: str = BlockColumn.ID.value,
+    pop_size: int = 20,
+    n_gen: int = 20,
+    seed: int = 42,
+    eliminate_duplicates: bool = True,
+    save_history: bool = True,
+    verbose: bool = True,
+    scorer_max_retries: int = 2,
+):
+    """Run district optimization with the same LLM-based third objective via NSGA-II."""
+    scorer = StrategicAlignmentScorer(
+        llm=llm,
+        strategic_goals=strategic_goals,
+        max_retries=scorer_max_retries,
+    )
+    problem = DistrictProblem(
+        blocks=blocks,
+        model=model,
+        estimator_kwargs=estimator_kwargs,
+        constraints=constraints,
+        target_id=target_id,
+        benchmarks=benchmarks,
+        target_id_column=target_id_column,
+        strategic_alignment_scorer=scorer,
+    )
+    algorithm = NSGA2(
+        pop_size=int(pop_size),
+        eliminate_duplicates=bool(eliminate_duplicates),
+    )
+    result = minimize(
+        problem,
+        algorithm,
+        ("n_gen", int(n_gen)),
+        seed=int(seed),
+        verbose=bool(verbose),
+        save_history=bool(save_history),
+    )
+    return result, problem

@@ -5,6 +5,7 @@ import pandas as pd
 
 from urbanomy.methods.land_value_modeling.ga_mc_optimizer import (
     StrategicAlignmentScorer,
+    run_nsga2_with_strategic_alignment,
     build_nsga3_reference_directions,
 )
 from urbanomy.methods.land_value_modeling.pareto_front_dataframe import build_pareto_front_dataframe
@@ -100,3 +101,7 @@ def test_build_pareto_front_dataframe_includes_ser_alignment_columns():
     assert float(df.loc[0, "ser_alignment_score"]) == 0.75
     assert "ser_alignment_reasoning" in df.columns
     assert "SER score=0.75" in df.loc[0, "summary"]
+
+
+def test_nsga2_helper_is_exported():
+    assert callable(run_nsga2_with_strategic_alignment)

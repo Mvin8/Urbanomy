@@ -22,6 +22,7 @@ from .ga_mc_optimizer import (
     DistrictProblem,
     StrategicAlignmentScorer,
     build_nsga3_reference_directions,
+    run_nsga2_with_strategic_alignment,
     run_nsga3_with_strategic_alignment,
 )
 
@@ -42,6 +43,7 @@ __all__ = [
     "DistrictProblem",
     "StrategicAlignmentScorer",
     "build_nsga3_reference_directions",
+    "run_nsga2_with_strategic_alignment",
     "run_nsga3_with_strategic_alignment",
 ]
 

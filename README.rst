@@ -178,7 +178,7 @@ We use the supplied Makefile shortcuts:
 
    make install-dev   # install editable package with dev tools
    make lint          # pylint on src/urbanomy
-   make test          # pytest tests/
+   make test          # pytest tests/ if the directory exists
    make install-docs  # editable install with docs extras
 
 Before opening a pull request:

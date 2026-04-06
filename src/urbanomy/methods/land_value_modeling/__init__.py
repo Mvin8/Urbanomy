@@ -1,8 +1,7 @@
 """Public exports for land value modelling utilities.
 
-The package used to expose LLM-based scenario helpers from sibling modules.
-Those modules are optional and may be absent in lightweight installs or local
-worktrees, so imports are guarded to keep core estimators available.
+Optional LLM helpers are imported defensively so the core estimators remain
+available in lightweight installs.
 """
 
 from .constants import (
@@ -46,13 +45,6 @@ __all__ = [
     "run_nsga2_with_strategic_alignment",
     "run_nsga3_with_strategic_alignment",
 ]
-
-try:
-    from .llm_agents import MultiAgentScenarioSelector
-except ImportError:
-    MultiAgentScenarioSelector = None
-else:
-    __all__.append("MultiAgentScenarioSelector")
 
 try:
     from .pareto_llm_selector import (

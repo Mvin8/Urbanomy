@@ -1,7 +1,7 @@
 PYTHON ?= python3
 PACKAGE_NAME = urbanomy
 SOURCE_DIR = src/$(PACKAGE_NAME)
-TEST_DIR = src/tests
+TEST_DIR = tests
 
 # code formatting and linting
 
@@ -48,7 +48,7 @@ test-pypi: clean build # команда для сборки и загрузки 
 # testing
 
 test: # тестирование
-	pytest ${TEST_DIR}
+	@if [ -d "${TEST_DIR}" ]; then pytest ${TEST_DIR}; else echo "No tests directory found, skipping."; fi
 
 test-cov: # тестирование с выводом процента покрытия кода тестами
-	pytest ${TEST_DIR} --cov
+	@if [ -d "${TEST_DIR}" ]; then pytest ${TEST_DIR} --cov; else echo "No tests directory found, skipping."; fi

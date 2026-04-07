@@ -100,13 +100,22 @@ class PlanningAgent:
                 tools.append("select_pareto_solution_by_document")
             return list(dict.fromkeys(tools))
         if route == "visualization":
+            tools: list[str] = []
+            if "прогноз стоимости земли" in outputs:
+                tools.append("predict_land_value")
             if "карта квартала" in outputs:
-                return ["plot_target_block_map"]
+                tools.append("plot_target_block_map")
+                return list(dict.fromkeys(tools))
             if "карта стоимости за сотку" in outputs and "карта полной стоимости" in outputs:
-                return ["plot_land_value_per_100m2_map", "plot_total_land_value_map"]
+                tools.extend(["plot_land_value_per_100m2_map", "plot_total_land_value_map"])
+                return list(dict.fromkeys(tools))
             if "карта стоимости за сотку" in outputs:
-                return ["plot_land_value_per_100m2_map"]
-            return ["plot_total_land_value_map"]
+                tools.append("plot_land_value_per_100m2_map")
+                return list(dict.fromkeys(tools))
+            if "карта полной стоимости" in outputs:
+                tools.append("plot_total_land_value_map")
+                return list(dict.fromkeys(tools))
+            return list(dict.fromkeys(tools or ["plot_total_land_value_map"]))
         if route == "block_parameters":
             return ["block_parameters"]
         return ["get_orchestrator_context", "get_orchestrator_tool_catalog"]
@@ -132,11 +141,48 @@ class PlanningAgent:
     def _requested_outputs(*, normalized: str, route: str) -> list[str]:
         requested: list[str] = []
         if route == "visualization":
-            if any(marker in normalized for marker in ("квартал", "блок", "target_id")):
+            has_visualization_signal = any(
+                marker in normalized
+                for marker in (
+                    "покажи",
+                    "показать",
+                    "визуализ",
+                    "построй",
+                    "нарисуй",
+                    "карта",
+                    "карту",
+                    "plot",
+                    "map",
+                    "show",
+                )
+            )
+            if any(
+                marker in normalized
+                for marker in (
+                    "вычисли стоимость",
+                    "посчитай стоимость",
+                    "рассчитай стоимость",
+                    "предскажи стоимость",
+                    "прогноз стоимости",
+                    "оцени стоимость",
+                    "estimate land value",
+                    "predict land value",
+                )
+            ):
+                requested.append("прогноз стоимости земли")
+            has_target_block_reference = bool(
+                re.search(r"(?:target_id|id)\s*[:=]?\s*\d+", normalized, flags=re.IGNORECASE)
+                or re.search(r"(?:квартал|блок)\D{0,20}\d+", normalized, flags=re.IGNORECASE)
+            )
+            if has_visualization_signal and has_target_block_reference:
                 requested.append("карта квартала")
-            if any(marker in normalized for marker in ("за сотку", "100 м2", "100м2", "удельн")):
+            if has_visualization_signal and any(
+                marker in normalized for marker in ("за сотку", "100 м2", "100м2", "удельн")
+            ):
                 requested.append("карта стоимости за сотку")
-            if any(marker in normalized for marker in ("общую стоимость", "полную стоимость", "стоимость участка")):
+            if has_visualization_signal and any(
+                marker in normalized for marker in ("общую стоимость", "полную стоимость", "стоимость участка")
+            ):
                 requested.append("карта полной стоимости")
         elif route == "district_optimization":
             if any(marker in normalized for marker in ("оптимиз", "pareto", "парето")):

@@ -47,11 +47,17 @@ class VisualizationRouteDecision(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     route: Literal[
+        "predict_land_value",
         "plot_total_land_value_map",
         "plot_land_value_per_100m2_map",
         "plot_target_block_map",
     ]
-    metric_kind: Literal["total_land_value", "land_value_per_100m2", "target_block"]
+    metric_kind: Literal[
+        "land_value_prediction",
+        "total_land_value",
+        "land_value_per_100m2",
+        "target_block",
+    ]
     price_column: str
     title: str = Field(description="Plot title that should be passed to the selected tool.")
     target_id: int | None = Field(
@@ -153,11 +159,17 @@ class VisualizationResult(BaseModel):
 
     user_request: str
     route: Literal[
+        "predict_land_value",
         "plot_total_land_value_map",
         "plot_land_value_per_100m2_map",
         "plot_target_block_map",
     ]
-    metric_kind: Literal["total_land_value", "land_value_per_100m2", "target_block"]
+    metric_kind: Literal[
+        "land_value_prediction",
+        "total_land_value",
+        "land_value_per_100m2",
+        "target_block",
+    ]
     price_column: str
     title: str
     reasoning: str
@@ -186,6 +198,24 @@ class DistrictOptimizationConfig(BaseModel):
     use_history: bool = False
     verbose: bool = True
     scenario_prefix: str = "scenario"
+    use_service_features: bool | None = None
+    service_features: list[str] | None = None
+
+
+class LandValuePredictionConfig(BaseModel):
+    """Configuration required to estimate land value for baseline blocks."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True, extra="forbid")
+
+    model: Any
+    orig_features: list[str]
+    categorical_features: list[str]
+    radius_list: list[float] | None = None
+    id_column: str = "id"
+    area_column: str = "site_area"
+    total_price_column: str = "land_value"
+    unit_price_column: str = "land_value_per_100m2"
+    predictions_in_log_scale: bool = True
     use_service_features: bool | None = None
     service_features: list[str] | None = None
 

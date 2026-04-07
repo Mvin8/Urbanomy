@@ -6,7 +6,7 @@ from typing import Any
 
 import geopandas as gpd
 
-from .models import LandValueVisualizationResult
+from .models import LandValuePredictionConfig, LandValueVisualizationResult
 from .visualization_agent import VisualizationAgent, create_visualization_agent
 
 
@@ -18,6 +18,7 @@ class LandValueVisualizationRoutingAgent:
         *,
         llm: Any,
         baseline_blocks: gpd.GeoDataFrame,
+        prediction_config: LandValuePredictionConfig | None = None,
         show_plot: bool = True,
         figsize: tuple[float, float] = (20.0, 20.0),
         cmap: str = "coolwarm",
@@ -31,6 +32,7 @@ class LandValueVisualizationRoutingAgent:
         self._agent = create_visualization_agent(
             llm=llm,
             baseline_blocks=baseline_blocks,
+            prediction_config=prediction_config,
             show_plot=show_plot,
             figsize=figsize,
             cmap=cmap,
@@ -45,7 +47,7 @@ class LandValueVisualizationRoutingAgent:
     def invoke(self, user_request: str) -> LandValueVisualizationResult:
         """Execute a land-value visualization request through the unified agent."""
         result = self._agent.invoke(user_request)
-        if result.route == "plot_target_block_map":
+        if result.route in {"predict_land_value", "plot_target_block_map"}:
             raise ValueError("LandValueVisualizationRoutingAgent supports only land-value maps.")
         return LandValueVisualizationResult(
             user_request=result.user_request,
@@ -82,6 +84,7 @@ def create_land_value_visualization_agent(
     *,
     llm: Any,
     baseline_blocks: gpd.GeoDataFrame,
+    prediction_config: LandValuePredictionConfig | None = None,
     show_plot: bool = True,
     figsize: tuple[float, float] = (20.0, 20.0),
     cmap: str = "coolwarm",
@@ -96,6 +99,7 @@ def create_land_value_visualization_agent(
     return LandValueVisualizationRoutingAgent(
         llm=llm,
         baseline_blocks=baseline_blocks,
+        prediction_config=prediction_config,
         show_plot=show_plot,
         figsize=figsize,
         cmap=cmap,
@@ -113,6 +117,7 @@ def visualize_land_value_from_request(
     llm: Any,
     baseline_blocks: gpd.GeoDataFrame,
     user_request: str,
+    prediction_config: LandValuePredictionConfig | None = None,
     show_plot: bool = True,
     figsize: tuple[float, float] = (20.0, 20.0),
     cmap: str = "coolwarm",
@@ -127,6 +132,7 @@ def visualize_land_value_from_request(
     agent = create_land_value_visualization_agent(
         llm=llm,
         baseline_blocks=baseline_blocks,
+        prediction_config=prediction_config,
         show_plot=show_plot,
         figsize=figsize,
         cmap=cmap,

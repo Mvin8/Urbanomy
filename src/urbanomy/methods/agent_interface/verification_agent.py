@@ -69,6 +69,25 @@ class VerificationAgent:
                 )
             else:
                 facts.append(f"В карте выделен квартал id={target_id}.")
+        elif route == "predict_land_value":
+            metric_kind = str(getattr(result, "metric_kind", "")).strip()
+            if metric_kind:
+                facts.append(f"Использована метрика {metric_kind}.")
+            prediction_payload = payload.get("prediction", payload)
+            if prediction_payload:
+                used_cache = prediction_payload.get("used_cache")
+                rows_updated = prediction_payload.get("rows_updated")
+                if used_cache is True:
+                    facts.append("Прогноз стоимости взят из кэша baseline_blocks.")
+                elif used_cache is False:
+                    facts.append(f"Прогноз стоимости пересчитан для {rows_updated} строк.")
+            else:
+                issues.append(
+                    VerificationIssue(
+                        severity="warning",
+                        message="У результата predict_land_value отсутствует payload с метаданными прогноза.",
+                    )
+                )
         else:
             metric_kind = str(getattr(result, "metric_kind", "")).strip()
             price_column = str(getattr(result, "price_column", "")).strip()
@@ -82,7 +101,7 @@ class VerificationAgent:
                 issues.append(
                     VerificationIssue(severity="warning", message="У visualization-результата пустой price_column.")
                 )
-        if getattr(result, "artifact", None) is None:
+        if route != "predict_land_value" and getattr(result, "artifact", None) is None:
             issues.append(
                 VerificationIssue(
                     severity="warning",

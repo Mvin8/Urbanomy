@@ -7,6 +7,8 @@ from typing import Any
 import geopandas as gpd
 from langchain_core.tools import tool
 
+from ..models import LandValuePredictionConfig
+from .internal.land_value_prediction import ensure_land_value_predictions
 from .internal.plotting import build_tool_payload, render_land_value_map
 
 
@@ -14,6 +16,7 @@ def make_plot_land_value_per_100m2_map_tool(
     *,
     baseline_blocks: gpd.GeoDataFrame,
     artifact_store: dict[str, Any],
+    prediction_config: LandValuePredictionConfig | None = None,
     default_title: str = "Карта стоимости земельных участков за сотку (руб.)",
     default_show_plot: bool = True,
     default_figsize: tuple[float, float] = (20.0, 20.0),
@@ -50,6 +53,12 @@ def make_plot_land_value_per_100m2_map_tool(
             notebook-style formatting. Does not accept custom styling or
             filtering arguments.
         """
+        prediction_payload = None
+        if prediction_config is not None:
+            prediction_payload = ensure_land_value_predictions(
+                baseline_blocks=baseline_blocks,
+                prediction_config=prediction_config,
+            )
         artifact = render_land_value_map(
             baseline_blocks=baseline_blocks,
             price_column="land_value_per_100m2",
@@ -65,6 +74,9 @@ def make_plot_land_value_per_100m2_map_tool(
             show_plot=default_show_plot,
         )
         artifact_store["plot_land_value_per_100m2_map"] = artifact
-        return build_tool_payload(artifact)
+        payload = build_tool_payload(artifact)
+        if prediction_payload is not None:
+            payload["prediction"] = prediction_payload
+        return payload
 
     return plot_land_value_per_100m2_map

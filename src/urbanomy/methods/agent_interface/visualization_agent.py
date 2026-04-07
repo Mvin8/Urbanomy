@@ -1,6 +1,8 @@
 """Unified tool-calling agent for Urbanomy visualization requests."""
 
 from __future__ import annotations
+
+import json
 from typing import Any, TypedDict
 
 import geopandas as gpd
@@ -10,14 +12,16 @@ from langgraph.graph import END, START, StateGraph
 from .internal.common.agent_utils import (
     build_tool_agent,
     extract_last_ai_message_text,
+    extract_last_tool_message,
     invoke_structured_router,
 )
 from .internal.common.domain_contracts import ToolDescriptor, describe_tool
 from .internal.common.request_parsing import extract_target_id
 from .internal.visualization.metadata import VISUALIZATION_CAPABILITY_LINES
-from .models import VisualizationResult, VisualizationRouteDecision
+from .models import LandValuePredictionConfig, VisualizationResult, VisualizationRouteDecision
 from .prompts import VISUALIZATION_AGENT_PROMPT, VISUALIZATION_ROUTER_SYSTEM_PROMPT
 from .tools import (
+    make_predict_land_value_tool,
     make_plot_land_value_per_100m2_map_tool,
     make_plot_target_block_map_tool,
     make_plot_total_land_value_map_tool,
@@ -31,6 +35,7 @@ class VisualizationState(TypedDict, total=False):
     route_decision: dict[str, Any]
     agent_message: str
     used_tool_fallback: bool
+    tool_payload: dict[str, Any]
     result_payload: dict[str, Any]
 
 
@@ -45,6 +50,7 @@ class VisualizationAgent:
         *,
         llm: Any,
         baseline_blocks: gpd.GeoDataFrame,
+        prediction_config: LandValuePredictionConfig | None = None,
         id_column: str = "id",
         show_plot: bool = True,
         figsize: tuple[float, float] = (20.0, 20.0),
@@ -65,10 +71,20 @@ class VisualizationAgent:
         self.default_total_title = default_total_title
         self.default_unit_title = default_unit_title
         self.target_block_title_template = target_block_title_template
+        self._prediction_config = prediction_config
         self._artifact_store: dict[str, Any] = {}
+        self._predict_tool = (
+            make_predict_land_value_tool(
+                baseline_blocks=baseline_blocks,
+                prediction_config=prediction_config,
+            )
+            if prediction_config is not None
+            else None
+        )
         self._plot_total_tool = make_plot_total_land_value_map_tool(
             baseline_blocks=baseline_blocks,
             artifact_store=self._artifact_store,
+            prediction_config=prediction_config,
             default_title=default_total_title,
             default_show_plot=show_plot,
             default_figsize=figsize,
@@ -81,6 +97,7 @@ class VisualizationAgent:
         self._plot_unit_tool = make_plot_land_value_per_100m2_map_tool(
             baseline_blocks=baseline_blocks,
             artifact_store=self._artifact_store,
+            prediction_config=prediction_config,
             default_title=default_unit_title,
             default_show_plot=show_plot,
             default_figsize=figsize,
@@ -100,9 +117,14 @@ class VisualizationAgent:
         self._agent = build_tool_agent(
             llm=self.llm,
             tools=[
-                self._plot_total_tool,
-                self._plot_unit_tool,
-                self._plot_target_block_tool,
+                tool
+                for tool in (
+                    self._predict_tool,
+                    self._plot_total_tool,
+                    self._plot_unit_tool,
+                    self._plot_target_block_tool,
+                )
+                if tool is not None
             ],
             system_prompt=VISUALIZATION_AGENT_PROMPT,
         )
@@ -134,6 +156,7 @@ class VisualizationAgent:
     def available_tools(self) -> tuple[Any, ...]:
         """Return tool instances owned by the visualization domain."""
         return (
+            *(() if self._predict_tool is None else (self._predict_tool,)),
             self._plot_total_tool,
             self._plot_unit_tool,
             self._plot_target_block_tool,
@@ -206,6 +229,31 @@ class VisualizationAgent:
             "total land value",
             "полная стоимость",
         )
+        prediction_markers = (
+            "вычисли",
+            "посчитай",
+            "рассчитай",
+            "предскаж",
+            "прогноз",
+            "оцени",
+            "estimate",
+            "predict",
+            "calculate",
+            "calculate land value",
+            "обнови стоимость",
+        )
+        visualization_markers = (
+            "покажи",
+            "показать",
+            "визуализ",
+            "построй",
+            "нарисуй",
+            "карта",
+            "карту",
+            "plot",
+            "map",
+            "show",
+        )
         target_markers = (
             "target_id",
             "квартал",
@@ -226,6 +274,17 @@ class VisualizationAgent:
                 target_id=target_id,
                 reasoning="В запросе указан квартал по id или target_id.",
                 confidence=0.9,
+            )
+        has_visualization_signal = any(marker in text for marker in visualization_markers)
+        has_prediction_signal = any(marker in text for marker in prediction_markers)
+        if self._predict_tool is not None and has_prediction_signal and not has_visualization_signal:
+            return VisualizationRouteDecision(
+                route="predict_land_value",
+                metric_kind="land_value_prediction",
+                price_column="land_value",
+                title="Прогноз стоимости земли рассчитан.",
+                reasoning="В запросе требуется расчёт стоимости земли без карты.",
+                confidence=0.88,
             )
         if any(marker in text for marker in per_100m2_markers):
             return VisualizationRouteDecision(
@@ -257,8 +316,62 @@ class VisualizationAgent:
         *,
         user_request: str,
     ) -> VisualizationRouteDecision:
+        normalized_request = user_request.lower()
+        has_visualization_signal = any(
+            marker in normalized_request
+            for marker in (
+                "покажи",
+                "показать",
+                "визуализ",
+                "построй",
+                "нарисуй",
+                "карта",
+                "карту",
+                "plot",
+                "map",
+                "show",
+            )
+        )
+        has_prediction_signal = any(
+            marker in normalized_request
+            for marker in (
+                "вычисли",
+                "посчитай",
+                "рассчитай",
+                "предскаж",
+                "прогноз",
+                "оцени",
+                "estimate",
+                "predict",
+                "calculate",
+                "обнови стоимость",
+            )
+        )
+        if (
+            self._predict_tool is not None
+            and has_prediction_signal
+            and not has_visualization_signal
+            and decision.route != "predict_land_value"
+        ):
+            return VisualizationRouteDecision(
+                route="predict_land_value",
+                metric_kind="land_value_prediction",
+                price_column="land_value",
+                title="Прогноз стоимости земли рассчитан.",
+                reasoning="Запрос требует только вычисления стоимости земли без построения карты.",
+                confidence=max(float(decision.confidence), 0.9),
+            )
         if decision.route != "plot_target_block_map" or decision.target_id is not None:
-            return decision
+            if decision.route != "predict_land_value" or self._predict_tool is not None:
+                return decision
+            return VisualizationRouteDecision(
+                route="plot_total_land_value_map",
+                metric_kind="total_land_value",
+                price_column="land_value",
+                title=self.default_total_title,
+                reasoning="Маршрут predict_land_value недоступен без prediction_config, выбрана карта полной стоимости участка.",
+                confidence=max(float(decision.confidence) - 0.2, 0.0),
+            )
         target_id = extract_target_id(user_request)
         if target_id is not None:
             return decision.model_copy(
@@ -298,15 +411,23 @@ class VisualizationAgent:
             agent_result = self._agent.invoke({"messages": [HumanMessage(content=execution_request)]})
         except Exception:
             agent_message = ""
+            tool_name = None
+            tool_payload: dict[str, Any] = {}
         else:
             agent_message = extract_last_ai_message_text(agent_result)
+            tool_name, tool_payload = self._extract_last_tool_result(agent_result)
         used_tool_fallback = False
-        if decision.route not in self._artifact_store:
+        if not self._was_route_executed(
+            decision=decision,
+            tool_name=tool_name,
+            tool_payload=tool_payload,
+        ):
             used_tool_fallback = True
-            self._invoke_tool_fallback(decision)
+            tool_payload = self._invoke_tool_fallback(decision)
         return {
             "agent_message": agent_message,
             "used_tool_fallback": used_tool_fallback,
+            "tool_payload": tool_payload,
         }
 
     def _build_execution_request(
@@ -324,23 +445,68 @@ class VisualizationAgent:
             lines.append(f"Используй target_id={route_decision.target_id}.")
         return "\n\n".join(lines)
 
-    def _invoke_tool_fallback(self, route_decision: VisualizationRouteDecision) -> None:
+    def _invoke_tool_fallback(self, route_decision: VisualizationRouteDecision) -> dict[str, Any]:
+        if route_decision.route == "predict_land_value":
+            if self._predict_tool is None:
+                raise ValueError("predict_land_value requires prediction_config.")
+            return self._predict_tool.invoke({})
         if route_decision.route == "plot_total_land_value_map":
-            self._plot_total_tool.invoke({})
-            return
+            return self._plot_total_tool.invoke({})
         if route_decision.route == "plot_land_value_per_100m2_map":
-            self._plot_unit_tool.invoke({})
-            return
+            return self._plot_unit_tool.invoke({})
         if route_decision.target_id is None:
             raise ValueError("plot_target_block_map requires target_id.")
-        self._plot_target_block_tool.invoke({"target_id": route_decision.target_id})
+        return self._plot_target_block_tool.invoke({"target_id": route_decision.target_id})
+
+    def _was_route_executed(
+        self,
+        *,
+        decision: VisualizationRouteDecision,
+        tool_name: str | None,
+        tool_payload: dict[str, Any],
+    ) -> bool:
+        if decision.route == "predict_land_value":
+            return tool_name == "predict_land_value" and bool(tool_payload)
+        return decision.route in self._artifact_store
+
+    @staticmethod
+    def _extract_last_tool_result(raw_result: dict[str, Any]) -> tuple[str | None, dict[str, Any]]:
+        message = extract_last_tool_message(raw_result)
+        if message is None:
+            return None, {}
+        content = message.content
+        parsed: dict[str, Any] = {}
+        if isinstance(content, dict):
+            parsed = content
+        elif isinstance(content, str):
+            try:
+                loaded = json.loads(content)
+            except json.JSONDecodeError:
+                loaded = None
+            if isinstance(loaded, dict):
+                parsed = loaded
+        name = getattr(message, "name", None)
+        return (str(name) if name else None), parsed
 
     def _finalize_node(self, state: VisualizationState) -> dict[str, Any]:
         decision = VisualizationRouteDecision.model_validate(state["route_decision"])
         artifact = self._artifact_store.get(decision.route)
+        tool_payload = dict(state.get("tool_payload", {}) or {})
+        if artifact is not None:
+            tool_payload = artifact.tool_payload()
+            prediction_payload = dict(state.get("tool_payload", {}) or {}).get("prediction")
+            if prediction_payload is not None:
+                tool_payload["prediction"] = prediction_payload
         target_id = decision.target_id if decision.route == "plot_target_block_map" else None
         if artifact is not None and hasattr(artifact, "target_id"):
             target_id = int(getattr(artifact, "target_id"))
+        agent_message = str(state.get("agent_message", "")).strip()
+        if decision.route == "predict_land_value":
+            agent_message = (
+                "Стоимость земли (`land_value`) и стоимость земли за сотку "
+                "(`land_value_per_100m2`) рассчитаны для всех кварталов. "
+                "Данные обновлены в наборе `baseline_blocks`."
+            )
         return {
             "result_payload": {
                 "user_request": state["user_request"],
@@ -350,9 +516,9 @@ class VisualizationAgent:
                 "title": artifact.title if artifact is not None else decision.title,
                 "reasoning": decision.reasoning,
                 "target_id": target_id,
-                "agent_message": str(state.get("agent_message", "")).strip(),
+                "agent_message": agent_message,
                 "used_tool_fallback": bool(state.get("used_tool_fallback", False)),
-                "tool_payload": artifact.tool_payload() if artifact is not None else {},
+                "tool_payload": tool_payload,
             }
         }
 
@@ -360,6 +526,7 @@ def create_visualization_agent(
     *,
     llm: Any,
     baseline_blocks: gpd.GeoDataFrame,
+    prediction_config: LandValuePredictionConfig | None = None,
     id_column: str = "id",
     show_plot: bool = True,
     figsize: tuple[float, float] = (20.0, 20.0),
@@ -376,6 +543,7 @@ def create_visualization_agent(
     return VisualizationAgent(
         llm=llm,
         baseline_blocks=baseline_blocks,
+        prediction_config=prediction_config,
         id_column=id_column,
         show_plot=show_plot,
         figsize=figsize,
@@ -395,6 +563,7 @@ def visualize_from_request(
     llm: Any,
     baseline_blocks: gpd.GeoDataFrame,
     user_request: str,
+    prediction_config: LandValuePredictionConfig | None = None,
     id_column: str = "id",
     show_plot: bool = True,
     figsize: tuple[float, float] = (20.0, 20.0),
@@ -411,6 +580,7 @@ def visualize_from_request(
     agent = create_visualization_agent(
         llm=llm,
         baseline_blocks=baseline_blocks,
+        prediction_config=prediction_config,
         id_column=id_column,
         show_plot=show_plot,
         figsize=figsize,

@@ -30,6 +30,7 @@ from .general_qa_agent import GeneralQaAgent, create_general_qa_agent
 from .models import (
     ConfirmationGate,
     DistrictOptimizationConfig,
+    LandValuePredictionConfig,
     TargetBlockVisualizationResult,
     UrbanomyOrchestratorRequest,
     UrbanomyOrchestratorResult,
@@ -73,6 +74,7 @@ class UrbanomyOrchestrator:
         llm: Any,
         baseline_blocks: gpd.GeoDataFrame,
         district_optimization_config: DistrictOptimizationConfig | None = None,
+        land_value_prediction_config: LandValuePredictionConfig | None = None,
         checkpointer: Any | None = None,
         default_thread_id: str = "default",
         checkpoint_namespace: str = "urbanomy_orchestrator_v2",
@@ -82,6 +84,10 @@ class UrbanomyOrchestrator:
         self.llm = llm
         self.baseline_blocks = baseline_blocks
         self.district_optimization_config = district_optimization_config
+        self.land_value_prediction_config = (
+            land_value_prediction_config
+            or self._prediction_config_from_optimization(district_optimization_config)
+        )
         self.checkpointer = checkpointer or (InMemorySaver() if InMemorySaver is not None else None)
         self.default_thread_id = str(default_thread_id).strip() or "default"
         self.active_thread_id = self.default_thread_id
@@ -452,6 +458,17 @@ class UrbanomyOrchestrator:
             "100 м2",
             "100 м²",
         )
+        prediction_markers = (
+            "вычисли",
+            "посчитай",
+            "рассчитай",
+            "предскаж",
+            "прогноз",
+            "оцени",
+            "estimate",
+            "predict",
+            "calculate",
+        )
         target_block_markers = (
             "target_id",
             "квартал",
@@ -512,6 +529,14 @@ class UrbanomyOrchestrator:
                 route="visualization",
                 reasoning="Запрос относится к визуализации квартала по target_id.",
                 confidence=0.88,
+            )
+        if any(marker in text for marker in prediction_markers) and any(
+            marker in text for marker in land_value_markers
+        ):
+            return UrbanomyOrchestratorRouteDecision(
+                route="visualization",
+                reasoning="Запрос относится к расчёту или прогнозу стоимости земли.",
+                confidence=0.86,
             )
         if any(marker in text for marker in visualization_markers) and any(
             marker in text for marker in land_value_markers
@@ -877,6 +902,7 @@ class UrbanomyOrchestrator:
             self._visualization_agent = create_visualization_agent(
                 llm=self.llm,
                 baseline_blocks=self.baseline_blocks,
+                prediction_config=self.land_value_prediction_config,
             )
         return self._visualization_agent
 
@@ -941,6 +967,8 @@ class UrbanomyOrchestrator:
 
     @staticmethod
     def _default_visualization_response(route: str) -> str:
+        if route == "predict_land_value":
+            return "Стоимость земли рассчитана и сохранена в baseline_blocks."
         if route == "plot_target_block_map":
             return "Квартал выделен на карте."
         if route == "plot_land_value_per_100m2_map":
@@ -1266,6 +1294,22 @@ class UrbanomyOrchestrator:
 
         return UrbanomyOrchestratorRouteDecision
 
+    @staticmethod
+    def _prediction_config_from_optimization(
+        config: DistrictOptimizationConfig | None,
+    ) -> LandValuePredictionConfig | None:
+        if config is None:
+            return None
+        return LandValuePredictionConfig(
+            model=config.model,
+            orig_features=list(config.orig_features),
+            categorical_features=list(config.categorical_features),
+            use_service_features=config.use_service_features,
+            service_features=(
+                list(config.service_features) if config.service_features is not None else None
+            ),
+        )
+
     def _resolve_thread_id(self, thread_id: str | None) -> str:
         return str(thread_id or self.active_thread_id).strip() or self.default_thread_id
 
@@ -1279,6 +1323,7 @@ def create_urbanomy_orchestrator(
     llm: Any,
     baseline_blocks: gpd.GeoDataFrame,
     district_optimization_config: DistrictOptimizationConfig | None = None,
+    land_value_prediction_config: LandValuePredictionConfig | None = None,
     checkpointer: Any | None = None,
     default_thread_id: str = "default",
     checkpoint_namespace: str = "urbanomy_orchestrator_v2",
@@ -1288,6 +1333,7 @@ def create_urbanomy_orchestrator(
         llm=llm,
         baseline_blocks=baseline_blocks,
         district_optimization_config=district_optimization_config,
+        land_value_prediction_config=land_value_prediction_config,
         checkpointer=checkpointer,
         default_thread_id=default_thread_id,
         checkpoint_namespace=checkpoint_namespace,

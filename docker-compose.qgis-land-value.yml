@@ -1,0 +1,11 @@
+services:
+  urbanomy-qgis-land-value:
+    build:
+      context: .
+      dockerfile: docker/qgis-land-value/Dockerfile
+    container_name: urbanomy-qgis-land-value
+    ports:
+      - "8765:8765"
+    volumes:
+      - ./docker/qgis-land-value/config.local.json:/config/service.json:ro
+      - ./examples/data:/data:ro

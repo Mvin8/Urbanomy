@@ -13,18 +13,7 @@ from .constants import (
     ORIGINAL_FEATURES,
     RADIUS_LIST,
 )
-from .land_data_preparation import LandDataPreparator
 from .land_price_estimation import LandPriceEstimator, transfer_baseline_prices
-from .land_price_visualization import plot_land_price_maps
-from .pareto_front_dataframe import build_pareto_front_dataframe
-from .scenario_modification import ScenarioTEPModifier, plot_scenario_impact
-from .ga_mc_optimizer import (
-    DistrictProblem,
-    StrategicAlignmentScorer,
-    build_nsga3_reference_directions,
-    run_nsga2_with_strategic_alignment,
-    run_nsga3_with_strategic_alignment,
-)
 
 __all__ = [
     "CATEGORICAL_FEATURES",
@@ -33,19 +22,63 @@ __all__ = [
     "DEFAULT_SQM_PER_PERSON",
     "ORIGINAL_FEATURES",
     "RADIUS_LIST",
-    "LandDataPreparator",
     "LandPriceEstimator",
     "transfer_baseline_prices",
-    "plot_land_price_maps",
-    "build_pareto_front_dataframe",
-    "ScenarioTEPModifier",
-    "plot_scenario_impact",
-    "DistrictProblem",
-    "StrategicAlignmentScorer",
-    "build_nsga3_reference_directions",
-    "run_nsga2_with_strategic_alignment",
-    "run_nsga3_with_strategic_alignment",
 ]
+
+try:
+    from .land_data_preparation import LandDataPreparator
+except ImportError:
+    LandDataPreparator = None
+else:
+    __all__.append("LandDataPreparator")
+
+try:
+    from .land_price_visualization import plot_land_price_maps
+except ImportError:
+    plot_land_price_maps = None
+else:
+    __all__.append("plot_land_price_maps")
+
+try:
+    from .pareto_front_dataframe import build_pareto_front_dataframe
+except ImportError:
+    build_pareto_front_dataframe = None
+else:
+    __all__.append("build_pareto_front_dataframe")
+
+try:
+    from .scenario_modification import ScenarioTEPModifier, plot_scenario_impact
+except ImportError:
+    ScenarioTEPModifier = None
+    plot_scenario_impact = None
+else:
+    __all__.extend(["ScenarioTEPModifier", "plot_scenario_impact"])
+
+try:
+    from .ga_mc_optimizer import (
+        DistrictProblem,
+        StrategicAlignmentScorer,
+        build_nsga3_reference_directions,
+        run_nsga2_with_strategic_alignment,
+        run_nsga3_with_strategic_alignment,
+    )
+except ImportError:
+    DistrictProblem = None
+    StrategicAlignmentScorer = None
+    build_nsga3_reference_directions = None
+    run_nsga2_with_strategic_alignment = None
+    run_nsga3_with_strategic_alignment = None
+else:
+    __all__.extend(
+        [
+            "DistrictProblem",
+            "StrategicAlignmentScorer",
+            "build_nsga3_reference_directions",
+            "run_nsga2_with_strategic_alignment",
+            "run_nsga3_with_strategic_alignment",
+        ]
+    )
 
 try:
     from .llm_agents import MultiAgentScenarioSelector

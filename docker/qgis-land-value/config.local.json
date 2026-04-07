@@ -1,0 +1,36 @@
+{
+  "model_path": "/data/catboost_land_value_no_services.cbm",
+  "orig_features": [
+    "residential",
+    "business",
+    "recreation",
+    "industrial",
+    "transport",
+    "special",
+    "agriculture",
+    "land_use",
+    "share",
+    "footprint_area",
+    "build_floor_area",
+    "living_area",
+    "non_living_area",
+    "population",
+    "site_area",
+    "fsi",
+    "gsi",
+    "mxi",
+    "l",
+    "morphotype",
+    "area_accessibility"
+  ],
+  "categorical_features": [
+    "land_use",
+    "morphotype"
+  ],
+  "predictions_in_log_scale": true,
+  "use_service_features": false,
+  "id_column": "id",
+  "area_column": "site_area",
+  "total_price_column": "land_value",
+  "unit_price_column": "land_value_per_100m2"
+}

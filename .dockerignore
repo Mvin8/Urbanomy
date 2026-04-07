@@ -1,0 +1,27 @@
+.git
+.github
+.venv
+.env
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache
+.mypy_cache
+.ruff_cache
+
+examples
+docs
+tests
+dist
+my_package.egg-info
+urbanomy.egg-info
+src/urbanomy.egg-info
+
+qgis_plugin
+tools
+
+*.ipynb
+*.zip
+
+# Keep docker configs and source code needed for the backend image

@@ -1,0 +1,16 @@
+[general]
+name=Urbanomy
+qgisMinimumVersion=3.28
+description=Estimate land value for blocks via a dedicated Urbanomy backend
+version=0.0.1
+author=Maksim Natykin
+email=mvin@itmo.ru
+about=Minimal Processing provider that sends the active block layer to the Urbanomy backend and returns a layer with land_value and land_value_per_100m2.
+category=Analysis
+tags=urban planning,land value,qgis,api
+homepage=https://github.com/iduclub/Urbanomy
+tracker=https://github.com/iduclub/Urbanomy/issues
+repository=https://github.com/iduclub/Urbanomy
+hasProcessingProvider=yes
+experimental=True
+icon=icon.svg

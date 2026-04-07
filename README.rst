@@ -39,6 +39,43 @@ Optional dependency groups:
 - ``pip install -e '.[test]'`` – pytest and coverage tooling.
 - ``pip install -e '.[docs]'`` – Sphinx stack for building the documentation.
 
+QGIS plugin + backend
+---------------------
+For QGIS we provide a minimal dedicated workflow for one operation:
+estimating ``land_value`` and ``land_value_per_100m2`` for a polygon layer of
+blocks through an external HTTP backend.
+
+Run the backend in Docker:
+
+.. code-block:: bash
+
+   # edit model_path / feature lists in docker/qgis-land-value/config.local.json
+   docker compose -f docker-compose.qgis-land-value.yml up --build
+
+By default the service listens on ``http://127.0.0.1:8765`` and exposes:
+
+- ``GET /healthz`` – liveness probe
+- ``POST /api/land-value-per-100m2`` – estimate land value for an input GeoJSON layer
+
+Build the QGIS plugin zip:
+
+.. code-block:: bash
+
+   python tools/build_qgis_plugin.py
+
+Then install ``dist/urbanomy_qgis_plugin.zip`` in QGIS.
+
+Inside the Processing Toolbox run:
+
+- ``Urbanomy -> Estimate land value via Urbanomy API``
+
+Use the default prompt:
+
+``Вычисли стоимость земли за сотку для кварталов``
+
+The algorithm sends the selected polygon layer to the backend and returns a new
+layer with ``land_value`` and ``land_value_per_100m2``.
+
 Quickstart
 ----------
 Land-value modelling

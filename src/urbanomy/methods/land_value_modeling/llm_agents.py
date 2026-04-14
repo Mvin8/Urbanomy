@@ -729,7 +729,6 @@ class CityRAGStore:
             
             boost = 1.0
             
-            
             query_words = set(query.lower().split())
             doc_words = set(doc.lower().split())
             word_overlap = len(query_words & doc_words) / (len(query_words) + 1e-6)

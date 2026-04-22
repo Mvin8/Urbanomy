@@ -669,6 +669,7 @@ def run_nsga3_with_strategic_alignment(
     return result, problem
 
 
+
 def run_nsga2_with_strategic_alignment(
     *,
     blocks: GeoDataFrame,
@@ -703,6 +704,47 @@ def run_nsga2_with_strategic_alignment(
         benchmarks=benchmarks,
         target_id_column=target_id_column,
         strategic_alignment_scorer=scorer,
+    )
+    algorithm = NSGA2(
+        pop_size=int(pop_size),
+        eliminate_duplicates=bool(eliminate_duplicates),
+    )
+    result = minimize(
+        problem,
+        algorithm,
+        ("n_gen", int(n_gen)),
+        seed=int(seed),
+        verbose=bool(verbose),
+        save_history=bool(save_history),
+    )
+    return result, problem
+
+def run_nsga2_without_strategic_alignment(
+    *,
+    blocks: GeoDataFrame,
+    model: CatBoostRegressor,
+    estimator_kwargs: Dict[str, Any],
+    constraints: Dict[str, Dict[str, Any]],
+    target_id: Any,
+    benchmarks: Mapping[LandUse, Dict[str, Any]] | None = None,
+    target_id_column: str = BlockColumn.ID.value,
+    pop_size: int = 20,
+    n_gen: int = 20,
+    seed: int = 42,
+    eliminate_duplicates: bool = True,
+    save_history: bool = True,
+    verbose: bool = True,
+):
+    """Run district optimization without strategic alignment objective via NSGA-II."""
+    problem = DistrictProblem(
+        blocks=blocks,
+        model=model,
+        estimator_kwargs=estimator_kwargs,
+        constraints=constraints,
+        target_id=target_id,
+        benchmarks=benchmarks,
+        target_id_column=target_id_column,
+        strategic_alignment_scorer=None,
     )
     algorithm = NSGA2(
         pop_size=int(pop_size),

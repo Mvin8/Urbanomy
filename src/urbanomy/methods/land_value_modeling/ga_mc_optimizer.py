@@ -20,10 +20,15 @@ from geopandas import GeoDataFrame
 from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
 from matplotlib.transforms import offset_copy
+from pymoo.algorithms.moo.moead import MOEAD  # Импорт алгоритма MOEA/D
 from pymoo.algorithms.moo.nsga2 import NSGA2  # Импорт алгоритма
 from pymoo.algorithms.moo.nsga3 import NSGA3
 from pymoo.core.callback import Callback
 from pymoo.core.problem import Problem
+from pymoo.decomposition.pbi import PBI
+from pymoo.decomposition.aasf import AASF
+from pymoo.decomposition.asf import ASF
+from pymoo.decomposition.tchebicheff import Tchebicheff
 from pymoo.optimize import minimize  # Функция для запуска оптимизации
 from pymoo.problems import get_problem  # Для получения тестовых задач
 from pymoo.util.ref_dirs import get_reference_directions
@@ -241,8 +246,8 @@ def build_nsga3_reference_directions(
     n_partitions: int | None = None,
 ) -> np.ndarray:
     """Build Das-Dennis reference directions for NSGA-III."""
-    if n_obj < 3:
-        raise ValueError("NSGA-III reference directions are intended for 3 or more objectives.")
+   # if n_obj < 3:
+#    raise ValueError("NSGA-III reference directions are intended for 3 or more objectives.")
 
     if n_partitions is None:
         target_pop = max(int(pop_size or 0), 1)
@@ -669,7 +674,6 @@ def run_nsga3_with_strategic_alignment(
     return result, problem
 
 
-
 def run_nsga2_with_strategic_alignment(
     *,
     blocks: GeoDataFrame,
@@ -719,6 +723,7 @@ def run_nsga2_with_strategic_alignment(
     )
     return result, problem
 
+
 def run_nsga2_without_strategic_alignment(
     *,
     blocks: GeoDataFrame,
@@ -758,4 +763,176 @@ def run_nsga2_without_strategic_alignment(
         verbose=bool(verbose),
         save_history=bool(save_history),
     )
+    return result, problem
+
+
+def optimize_nsga3_without_llm(
+    problem: Problem,
+    population_size: int = 100,
+    generations: int = 200,
+    n_partitions: int = 12
+) -> tuple:
+    """
+    Perform NSGA-III optimization without using LLM.
+
+    Args:
+        problem (Problem): The optimization problem to solve.
+        population_size (int): The size of the population.
+        generations (int): The number of generations to evolve.
+        n_partitions (int): The number of partitions for reference directions.
+
+    Returns:
+        tuple: (result, problem) - The optimization result and the problem instance.
+    """
+    # Generate reference directions for NSGA-III
+    ref_dirs = build_nsga3_reference_directions(
+        n_obj=problem.n_obj, pop_size=population_size, n_partitions=n_partitions
+    )
+
+    # Initialize the NSGA-III algorithm
+    algorithm = NSGA3(pop_size=population_size, ref_dirs=ref_dirs)
+
+    # Perform the optimization
+    result = minimize(
+        problem,
+        algorithm,
+        termination=("n_gen", generations),
+        seed=42,
+        save_history=True,
+        verbose=True,
+    )
+
+    return result, problem
+
+
+def optimize_moead_without_llm(
+    problem: Problem,
+    population_size: int = 100,
+    generations: int = 200,
+    decomposition: str = "pbi",
+    n_neighbors: int = 20,
+    prob_neighbor_mating: float = 0.7,
+) -> tuple:
+    """
+    Perform MOEA/D optimization without using LLM.
+
+    Args:
+        problem (Problem): The optimization problem to solve.
+        population_size (int): The size of the population.
+        generations (int): The number of generations to evolve.
+        decomposition (str): The decomposition method ('pbi', 'aasf', 'asf', 'tchebicheff').
+        n_neighbors (int): The number of neighbors in the neighborhood.
+        prob_neighbor_mating (float): Probability of selecting from neighbors for mating.
+
+    Returns:
+        tuple: (result, problem) - The optimization result and the problem instance.
+    """
+    # Map decomposition string to class
+    decomposition_map = {
+        "pbi": PBI(),
+        "aasf": AASF(beta=10.0),
+        "asf": ASF(eps=0.01),
+        "tchebicheff": Tchebicheff(),
+    }
+    
+    if decomposition not in decomposition_map:
+        raise ValueError(f"Unknown decomposition method: {decomposition}. Must be one of {list(decomposition_map.keys())}")
+    
+    decomp_obj = decomposition_map[decomposition]
+
+    # Generate reference directions for MOEA/D
+    ref_dirs = build_nsga3_reference_directions(
+        n_obj=problem.n_obj, pop_size=population_size, n_partitions=10
+    )
+
+    # Initialize the MOEA/D algorithm
+    algorithm = MOEAD(
+        ref_dirs=ref_dirs,
+        n_neighbors=n_neighbors,
+        decomposition=decomp_obj,
+        prob_neighbor_mating=prob_neighbor_mating,
+    )
+
+    # Perform the optimization
+    result = minimize(
+        problem,
+        algorithm,
+        termination=("n_gen", generations),
+        seed=42,
+        save_history=True,
+        verbose=True,
+    )
+
+    return result, problem
+
+
+def optimize_moead_with_llm(
+    problem: Problem,
+    strategic_alignment_scorer: StrategicAlignmentScorer,
+    population_size: int = 100,
+    generations: int = 200,
+    decomposition: str = "pbi",
+    n_neighbors: int = 20,
+    prob_neighbor_mating: float = 0.7,
+) -> tuple:
+    """
+    Perform MOEA/D optimization with LLM-based strategic alignment scoring.
+
+    This function optimizes using MOEA/D where objectives include land value,
+    investor NPV, and strategic alignment score computed by an LLM.
+
+    Args:
+        problem (Problem): The optimization problem to solve (should have strategic_alignment_scorer).
+        strategic_alignment_scorer (StrategicAlignmentScorer): The LLM-based scorer for strategic alignment.
+        population_size (int): The size of the population.
+        generations (int): The number of generations to evolve.
+        decomposition (str): The decomposition method ('pbi', 'aasf', 'asf', 'tchebicheff').
+        n_neighbors (int): The number of neighbors in the neighborhood.
+        prob_neighbor_mating (float): Probability of selecting from neighbors for mating.
+
+    Returns:
+        tuple: (result, problem) - The optimization result and the problem instance.
+    """
+    # Attach the scorer to the problem if it's not already there
+    if not hasattr(problem, 'strategic_alignment_scorer') or problem.strategic_alignment_scorer is None:
+        problem.strategic_alignment_scorer = strategic_alignment_scorer
+        problem.objective_names = ["land_value_total", "investor_npv", "ser_alignment_score"]
+        problem.n_obj = 3
+
+    # Map decomposition string to class
+    decomposition_map = {
+        "pbi": PBI(),
+        "aasf": AASF(beta=10.0),
+        "asf": ASF(eps=0.01),
+        "tchebicheff": Tchebicheff(),
+    }
+    
+    if decomposition not in decomposition_map:
+        raise ValueError(f"Unknown decomposition method: {decomposition}. Must be one of {list(decomposition_map.keys())}")
+    
+    decomp_obj = decomposition_map[decomposition]
+
+    # Generate reference directions for MOEA/D
+    ref_dirs = build_nsga3_reference_directions(
+        n_obj=problem.n_obj, pop_size=population_size, n_partitions=10
+    )
+
+    # Initialize the MOEA/D algorithm
+    algorithm = MOEAD(
+        ref_dirs=ref_dirs,
+        n_neighbors=n_neighbors,
+        decomposition=decomp_obj,
+        prob_neighbor_mating=prob_neighbor_mating,
+    )
+
+    # Perform the optimization
+    result = minimize(
+        problem,
+        algorithm,
+        termination=("n_gen", generations),
+        seed=42,
+        save_history=True,
+        verbose=True,
+    )
+
     return result, problem

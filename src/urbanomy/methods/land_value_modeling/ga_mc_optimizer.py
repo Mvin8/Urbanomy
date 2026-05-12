@@ -107,16 +107,29 @@ class StrategicAlignmentScorer:
         self,
         *,
         llm: Any,
-        strategic_goals: str,
+        strategic_goals: str | dict[str, str],
         max_retries: int = 2,
     ) -> None:
-        goals = str(strategic_goals).strip()
-        if not goals:
-            raise ValueError("strategic_goals must be a non-empty string.")
+        if isinstance(strategic_goals, dict):
+            # Multiple prompts mode
+            if not strategic_goals:
+                raise ValueError("strategic_goals dict must not be empty.")
+            self.strategic_goals = {k: str(v).strip() for k, v in strategic_goals.items()}
+            if any(not v for v in self.strategic_goals.values()):
+                raise ValueError("All strategic_goals values must be non-empty strings.")
+            self.is_multi_prompt = True
+        else:
+            # Single prompt mode (backward compatible)
+            goals = str(strategic_goals).strip()
+            if not goals:
+                raise ValueError("strategic_goals must be a non-empty string.")
+            self.strategic_goals = goals
+            self.is_multi_prompt = False
+        
         self.llm = llm
-        self.strategic_goals = goals
         self.max_retries = max(0, int(max_retries))
         self._cache: dict[str, dict[str, Any]] = {}
+        self.prompt_history: list[dict[str, Any]] = []
 
     def __deepcopy__(self, memo: dict[int, Any]):
         """Keep the underlying LLM by reference to avoid deepcopy/pickle failures in pymoo history."""
@@ -124,11 +137,22 @@ class StrategicAlignmentScorer:
         memo[id(self)] = copied
         copied.llm = self.llm
         copied.strategic_goals = self.strategic_goals
+        copied.is_multi_prompt = self.is_multi_prompt
+        copied.prompt_history = copy.deepcopy(self.prompt_history, memo)
         copied.max_retries = self.max_retries
         copied._cache = copy.deepcopy(self._cache, memo)
         return copied
 
-    def _build_prompt(self, *, candidate_payload: Mapping[str, Any]) -> str:
+    def _build_prompt(self, *, candidate_payload: Mapping[str, Any], prompt_key: str | None = None) -> str:
+        if self.is_multi_prompt:
+            if prompt_key is None:
+                raise ValueError("prompt_key is required for multi-prompt mode")
+            goals = self.strategic_goals.get(prompt_key, "")
+            if not goals:
+                raise ValueError(f"No strategic goals found for prompt_key: {prompt_key}")
+        else:
+            goals = self.strategic_goals
+        
         return (
             "Ты градостроительный эксперт. Оцени, насколько сценарий соответствует целям "
             "социально-экономического развития.\n"
@@ -140,7 +164,7 @@ class StrategicAlignmentScorer:
             "- 1.0 означает максимально сильное соответствие.\n"
             "- Используй только данные из сценария.\n"
             "- В reasoning укажи 1-3 причины оценки.\n\n"
-            f"Цели СЭР:\n{self.strategic_goals}\n\n"
+            f"Цели СЭР:\n{goals}\n\n"
             "Сценарий:\n"
             f"{json.dumps(_json_ready(candidate_payload), ensure_ascii=False, indent=2)}"
         )
@@ -200,6 +224,12 @@ class StrategicAlignmentScorer:
         land_value_after: float,
         investor_npv: float,
     ) -> dict[str, Any]:
+        """
+        Score a candidate scenario. Returns single or multiple scores depending on mode.
+        
+        In single-prompt mode: returns {"score": float, "reasoning": str, ...}
+        In multi-prompt mode: returns {"scores": {prompt_key: float}, "reasonings": {prompt_key: str}, ...}
+        """
         land_use_value = params_repaired.get("land_use")
         land_use_name = getattr(land_use_value, "name", str(land_use_value).split(".")[-1])
         candidate_payload = {
@@ -215,28 +245,75 @@ class StrategicAlignmentScorer:
         if cached is not None:
             return cached
 
-        prompt = self._build_prompt(candidate_payload=candidate_payload)
-        response = self.llm.invoke(prompt)
-        raw_text = _message_to_text(response)
-        last_error: Exception | None = None
-        for attempt in range(self.max_retries + 1):
-            try:
-                score, reasoning = self._parse_response(raw_text)
-                result = {
-                    "score": float(score),
-                    "reasoning": reasoning,
+        if self.is_multi_prompt:
+            # Multi-prompt mode: score against each prompt key
+            scores = {}
+            reasonings = {}
+            for prompt_key in self.strategic_goals.keys():
+                prompt = self._build_prompt(candidate_payload=candidate_payload, prompt_key=prompt_key)
+                self.prompt_history.append(
+                    {
+                        "prompt_key": prompt_key,
+                        "prompt": prompt,
+                        "candidate_payload": candidate_payload,
+                    }
+                )
+                response = self.llm.invoke(prompt)
+                raw_text = _message_to_text(response)
+                last_error: Exception | None = None
+                
+                for attempt in range(self.max_retries + 1):
+                    try:
+                        score, reasoning = self._parse_response(raw_text)
+                        scores[prompt_key] = float(score)
+                        reasonings[prompt_key] = reasoning
+                        break
+                    except Exception as exc:
+                        last_error = exc
+                        if attempt >= self.max_retries:
+                            raise ValueError(f"Unable to score prompt '{prompt_key}': {last_error}") from last_error
+                        repair = self.llm.invoke(self._repair_prompt(raw_text=raw_text, error_text=str(exc)))
+                        raw_text = _message_to_text(repair)
+            
+            result = {
+                "scores": scores,
+                "reasonings": reasonings,
+                "candidate_payload": candidate_payload,
+            }
+            self._cache[cache_key] = result
+            return result
+        else:
+            # Single-prompt mode (backward compatible)
+            prompt = self._build_prompt(candidate_payload=candidate_payload)
+            self.prompt_history.append(
+                {
+                    "prompt_key": None,
+                    "prompt": prompt,
                     "candidate_payload": candidate_payload,
                 }
-                self._cache[cache_key] = result
-                return result
-            except Exception as exc:
-                last_error = exc
-                if attempt >= self.max_retries:
-                    break
-                repair = self.llm.invoke(self._repair_prompt(raw_text=raw_text, error_text=str(exc)))
-                raw_text = _message_to_text(repair)
+            )
+            response = self.llm.invoke(prompt)
+            raw_text = _message_to_text(response)
+            last_error: Exception | None = None
+            
+            for attempt in range(self.max_retries + 1):
+                try:
+                    score, reasoning = self._parse_response(raw_text)
+                    result = {
+                        "score": float(score),
+                        "reasoning": reasoning,
+                        "candidate_payload": candidate_payload,
+                    }
+                    self._cache[cache_key] = result
+                    return result
+                except Exception as exc:
+                    last_error = exc
+                    if attempt >= self.max_retries:
+                        break
+                    repair = self.llm.invoke(self._repair_prompt(raw_text=raw_text, error_text=str(exc)))
+                    raw_text = _message_to_text(repair)
 
-        raise ValueError(f"Unable to obtain a valid strategic alignment score from LLM: {last_error}") from last_error
+            raise ValueError(f"Unable to obtain a valid strategic alignment score from LLM: {last_error}") from last_error
 
 
 def build_nsga3_reference_directions(
@@ -277,11 +354,37 @@ class DistrictProblem(Problem):
         self.target_id = target_id
         self.target_id_column = target_id_column
         self.strategic_alignment_scorer = strategic_alignment_scorer
-        self.objective_names = (
-            ["land_value_total", "investor_npv", "ser_alignment_score"]
-            if strategic_alignment_scorer is not None
-            else ["land_value_total", "investor_npv"]
-        )
+        self.objective_names = [
+
+            "land_value_total",
+
+            "investor_npv",
+
+        ]
+
+        if strategic_alignment_scorer is not None:
+
+            if strategic_alignment_scorer.is_multi_prompt:
+
+                self.objective_names.extend(
+
+                    [
+
+                        f"ser_alignment_{key}"
+
+                        for key in strategic_alignment_scorer.strategic_goals.keys()
+
+                    ]
+
+                )
+
+            else:
+
+                self.objective_names.append(
+
+                    "ser_alignment_score"
+
+                )
         self.var_names = list(constraints.keys())
         self._strategic_alignment_results: dict[str, dict[str, Any]] = {}
         land_use_vars = [
@@ -525,14 +628,24 @@ class DistrictProblem(Problem):
         return self._strategic_alignment_results.get(key)
 
     def _evaluate(self, X, out, *args, **kwargs):
+
         n = X.shape[0]
+
         F = np.zeros((n, len(self.objective_names)))
 
         for i in range(n):
+
             genome = X[i]
-            changes = {name: genome[j] for j, name in enumerate(self.var_names)}
+
+            changes = {
+                name: genome[j]
+                for j, name in enumerate(self.var_names)
+            }
+
             changes = self._repair_genome(changes)
+
             modifier = ScenarioTEPModifier(self.blocks)
+
             blocks_after = modifier.apply(
                 self.target_id,
                 changes,
@@ -553,15 +666,42 @@ class DistrictProblem(Problem):
                 discount_rate=0.18,
             )
 
+            # maximize -> minimize
             F[i, 0] = -land_value
             F[i, 1] = -investment_potential
+
             if self.strategic_alignment_scorer is not None:
+
                 alignment = self.evaluate_strategic_alignment(
                     params_repaired=changes,
                     land_value_after=land_value,
                     investor_npv=investment_potential,
                 )
-                F[i, 2] = -float(alignment["score"]) if alignment is not None else 0.0
+
+                if alignment is not None:
+
+                    # MULTI PROMPT
+                    if self.strategic_alignment_scorer.is_multi_prompt:
+
+                        scores_dict = alignment.get("scores", {})
+
+                        for j, prompt_key in enumerate(
+                            self.strategic_alignment_scorer.strategic_goals.keys(),
+                            start=2,
+                        ):
+
+                            score = float(
+                                scores_dict.get(prompt_key, 0.0)
+                            )
+
+                            F[i, j] = -score
+
+                    # SINGLE PROMPT
+                    else:
+
+                        F[i, 2] = -float(
+                            alignment["score"]
+                        )
 
         out["F"] = F
 
@@ -576,41 +716,37 @@ class NSGA2GenerationStatsCallback(Callback):
 
     def notify(self, algorithm) -> None:
         gen = int(algorithm.n_gen)
+
         if gen % self.every != 0:
             return
 
         F = algorithm.pop.get("F")
+
         if F is None or len(F) == 0:
             return
 
-        f_land = -np.asarray(F[:, 0], dtype=float)
-        f_npv = -np.asarray(F[:, 1], dtype=float)
-        stats = {
-            "gen": gen,
-            "land_min": float(np.min(f_land)),
-            "land_median": float(np.median(f_land)),
-            "land_max": float(np.max(f_land)),
-            "npv_min": float(np.min(f_npv)),
-            "npv_median": float(np.median(f_npv)),
-            "npv_max": float(np.max(f_npv)),
-        }
-        ser_text = ""
-        if F.shape[1] > 2:
-            f_ser = -np.asarray(F[:, 2], dtype=float)
-            stats.update(
-                {
-                    "ser_min": float(np.min(f_ser)),
-                    "ser_median": float(np.median(f_ser)),
-                    "ser_max": float(np.max(f_ser)),
-                }
+        stats_parts = []
+
+        for obj_idx in range(F.shape[1]):
+
+            values = -np.asarray(F[:, obj_idx], dtype=float)
+
+            obj_stats = {
+                "min": float(np.min(values)),
+                "median": float(np.median(values)),
+                "max": float(np.max(values)),
+            }
+
+            stats_parts.append(
+                f"f{obj_idx} "
+                f"min/med/max="
+                f"{obj_stats['min']:.3f}/"
+                f"{obj_stats['median']:.3f}/"
+                f"{obj_stats['max']:.3f}"
             )
-            ser_text = " | SER min/med/max={ser_min:.3f}/{ser_median:.3f}/{ser_max:.3f}".format(**stats)
-        self.history.append(stats)
+
         print(
-            "[gen {gen:03d}] "
-            "land_value min/med/max={land_min:,.0f}/{land_median:,.0f}/{land_max:,.0f} | "
-            "NPV min/med/max={npv_min:,.0f}/{npv_median:,.0f}/{npv_max:,.0f}".format(**stats)
-            + ser_text
+            f"[gen {gen:03d}] " + " | ".join(stats_parts)
         )
 
 
@@ -622,7 +758,7 @@ def run_nsga3_with_strategic_alignment(
     constraints: Dict[str, Dict[str, Any]],
     target_id: Any,
     llm: Any,
-    strategic_goals: str,
+    strategic_goals: str | dict[str, str],
     benchmarks: Mapping[LandUse, Dict[str, Any]] | None = None,
     target_id_column: str = BlockColumn.ID.value,
     pop_size: int = 20,
@@ -634,8 +770,16 @@ def run_nsga3_with_strategic_alignment(
     ref_dirs: np.ndarray | None = None,
     ref_dir_partitions: int | None = None,
     scorer_max_retries: int = 2,
+    return_pareto_prompt_history: bool = False,
 ):
-    """Run district optimization with a third LLM-based strategic objective via NSGA-III."""
+    """Run district optimization with a third LLM-based strategic objective via NSGA-III.
+
+    Returns:
+        tuple: (result, problem, prompt_history) - optimization result, problem instance,
+            and the prompts that were sent to the LLM for scoring.
+            If return_pareto_prompt_history=True, prompt_history is filtered to
+            entries corresponding only to solutions on the Pareto front.
+    """
     scorer = StrategicAlignmentScorer(
         llm=llm,
         strategic_goals=strategic_goals,
@@ -671,7 +815,52 @@ def run_nsga3_with_strategic_alignment(
         verbose=bool(verbose),
         save_history=bool(save_history),
     )
-    return result, problem
+    prompt_history = scorer.prompt_history
+    if return_pareto_prompt_history:
+        prompt_history = get_pareto_prompt_history(problem, result)
+    return result, problem, prompt_history
+
+
+def get_pareto_prompt_history(
+    problem: DistrictProblem,
+    result: Any,
+    unique: bool = True,
+) -> list[dict[str, Any]]:
+    """Select prompt history entries corresponding only to Pareto-front solutions."""
+    if not hasattr(result, "X") or result.X is None:
+        return []
+    if problem.strategic_alignment_scorer is None:
+        return []
+
+    payload_keys: set[str] = set()
+    for x in np.atleast_2d(result.X):
+        genome = {name: float(x[j]) for j, name in enumerate(problem.var_names)}
+        repaired = problem._repair_genome(genome)
+        params_key = json.dumps(
+            _json_ready(repaired),
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        payload_keys.add(params_key)
+
+    history: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for entry in problem.strategic_alignment_scorer.prompt_history:
+        candidate_payload = entry.get("candidate_payload", {})
+        params_repaired = candidate_payload.get("params_repaired")
+        if params_repaired is None:
+            continue
+        key = json.dumps(
+            params_repaired,
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        if key in payload_keys:
+            if unique and key in seen:
+                continue
+            seen.add(key)
+            history.append(entry)
+    return history
 
 
 def run_nsga2_with_strategic_alignment(
@@ -682,7 +871,7 @@ def run_nsga2_with_strategic_alignment(
     constraints: Dict[str, Dict[str, Any]],
     target_id: Any,
     llm: Any,
-    strategic_goals: str,
+    strategic_goals: str|dict[str, str],
     benchmarks: Mapping[LandUse, Dict[str, Any]] | None = None,
     target_id_column: str = BlockColumn.ID.value,
     pop_size: int = 20,

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import math
 from typing import Any
-
+import numpy as np
 import pandas as pd
 
 
@@ -81,6 +81,7 @@ def build_pareto_front_dataframe(
     scenario_prefix: str = "scenario",
 ) -> pd.DataFrame:
     """Build a notebook-friendly Pareto-front DataFrame from optimizer outputs."""
+
     if baseline_land_value is None:
         baseline_land_value = float(
             problem.evaluate_catboost(
@@ -94,65 +95,188 @@ def build_pareto_front_dataframe(
 
     x_all: list[Any] = []
     f_all: list[Any] = []
+
     if use_history and getattr(res, "history", None):
+
         for alg in res.history:
+
             pop = alg.pop
+
             xi, fi = pop.get("X"), pop.get("F")
+
             if xi is not None and fi is not None and len(xi):
+
                 x_all.extend(list(xi))
                 f_all.extend(list(fi))
 
     if x_all and f_all:
+
         x_values = x_all
         f_values = f_all
+
     else:
+
         x_values = list(res.X)
         f_values = list(res.F)
 
     rows: list[dict[str, Any]] = []
+
     for index, (x_row, f_row) in enumerate(zip(x_values, f_values)):
+
         params_optimal = {
             param: x_row[i]
             for i, param in enumerate(problem.constraints.keys())
         }
-        params_repaired = problem._repair_genome(dict(params_optimal))
+
+        params_repaired = problem._repair_genome(
+            dict(params_optimal)
+        )
+
         scenario_id = f"{scenario_prefix}_{index}"
+
         land_use_value = params_repaired.get("land_use")
-        land_use_name = getattr(land_use_value, "name", str(land_use_value).split(".")[-1])
+
+        land_use_name = getattr(
+            land_use_value,
+            "name",
+            str(land_use_value).split(".")[-1],
+        )
+
+        # first two objectives are fixed
         land_value_after = float(-f_row[0])
-        land_value_gain = float(land_value_after - baseline_land_value)
+
+        land_value_gain = float(
+            land_value_after - baseline_land_value
+        )
+
         investor_npv = float(-f_row[1])
-        ser_alignment_score = float(-f_row[2]) if len(f_row) > 2 else None
+
         strategic_alignment = None
+
         if hasattr(problem, "lookup_strategic_alignment"):
+
             strategic_alignment = problem.lookup_strategic_alignment(
                 params_repaired=params_repaired,
                 land_value_after=land_value_after,
                 investor_npv=investor_npv,
             )
-        title = f"{scenario_id} | {land_use_name}"
-        summary = _scenario_summary_from_row(
-            scenario_id=scenario_id,
-            title=title,
-            land_use=land_use_name,
-            land_value_gain=land_value_gain,
-            investor_npv=investor_npv,
-            ser_alignment_score=ser_alignment_score,
-        )
+
         row = {
             "scenario_id": scenario_id,
-            "title": title,
-            "summary": summary,
             "land_use": land_use_name,
             "land_value_after": land_value_after,
             "land_value_gain": land_value_gain,
             "investor_npv": investor_npv,
             "params_repaired": _json_ready(params_repaired),
         }
-        if ser_alignment_score is not None:
-            row["ser_alignment_score"] = ser_alignment_score
-        if strategic_alignment is not None:
-            row["ser_alignment_reasoning"] = str(strategic_alignment.get("reasoning", "")).strip()
+
+        # -------------------------------------------------
+        # strategic alignment objectives
+        # -------------------------------------------------
+
+        scorer = getattr(
+            problem,
+            "strategic_alignment_scorer",
+            None,
+        )
+
+        if scorer is not None and len(f_row) > 2:
+
+            # MULTI PROMPT MODE
+            if scorer.is_multi_prompt:
+
+                scores_dict = (
+                    strategic_alignment.get("scores", {})
+                    if strategic_alignment is not None
+                    else {}
+                )
+
+                reasonings_dict = (
+                    strategic_alignment.get("reasonings", {})
+                    if strategic_alignment is not None
+                    else {}
+                )
+
+                for obj_idx, prompt_key in enumerate(
+                    scorer.strategic_goals.keys(),
+                    start=2,
+                ):
+
+                    score = float(-f_row[obj_idx])
+
+                    row[
+                        f"ser_alignment_{prompt_key}"
+                    ] = score
+
+                    row[
+                        f"ser_alignment_{prompt_key}_reasoning"
+                    ] = str(
+                        reasonings_dict.get(prompt_key, "")
+                    ).strip()
+
+                # optional aggregated score
+                if scores_dict:
+
+                    row["ser_alignment_mean"] = float(
+                        np.mean(list(scores_dict.values()))
+                    )
+
+            # SINGLE PROMPT MODE
+            else:
+
+                ser_alignment_score = float(-f_row[2])
+
+                row["ser_alignment_score"] = (
+                    ser_alignment_score
+                )
+
+                if strategic_alignment is not None:
+
+                    row["ser_alignment_reasoning"] = str(
+                        strategic_alignment.get(
+                            "reasoning",
+                            "",
+                        )
+                    ).strip()
+
+        title = (
+            f"{scenario_id} | "
+            f"{land_use_name}"
+        )
+
+        row["title"] = title
+
+        summary_parts = [
+            f"land value gain={land_value_gain:,.0f}",
+            f"npv={investor_npv:,.0f}",
+        ]
+
+        if scorer is not None:
+
+            if scorer.is_multi_prompt:
+
+                alignment_cols = [
+                    c
+                    for c in row.keys()
+                    if c.startswith("ser_alignment_")
+                    and not c.endswith("_reasoning")
+                    and c != "ser_alignment_mean"
+                ]
+
+                for col in alignment_cols:
+
+                    summary_parts.append(
+                        f"{col}={row[col]:.2f}"
+                    )
+
+            elif "ser_alignment_score" in row:
+
+                summary_parts.append(
+                    f"ser={row['ser_alignment_score']:.2f}"
+                )
+
+        row["summary"] = " | ".join(summary_parts)
+
         rows.append(row)
 
     return pd.DataFrame(rows)

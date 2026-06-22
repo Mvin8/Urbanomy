@@ -20,12 +20,12 @@ from sphinx.builders.html import StandaloneHTMLBuilder
 
 # -- Project information -----------------------------------------------------
 
-project = "MyPackage"
+project = "Urbanomy"
 copyright = "2024-{}, IDU".format(datetime.datetime.now().year)
 author = "IDU"
 
 # The full version, including alpha/beta/rc tags
-release = "0.0.1" # needs to be changed from time to time
+release = "0.0.1"
 # -- General configuration ---------------------------------------------------
 
 # Add any Sphinx extension module names here, as strings. They can be
@@ -38,7 +38,6 @@ extensions = [
     "sphinx.ext.napoleon",
     "sphinx.ext.viewcode",
     "sphinx.ext.mathjax",
-    "autodocsumm",
     "sphinx.ext.autosummary",
     "sphinx.ext.autodoc.typehints",
     "sphinx.ext.graphviz",

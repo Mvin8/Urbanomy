@@ -609,6 +609,50 @@ class NSGA2GenerationStatsCallback(Callback):
         )
 
 
+def _run_with_strategic_alignment(
+    *,
+    blocks: GeoDataFrame,
+    model: CatBoostRegressor,
+    estimator_kwargs: Dict[str, Any],
+    constraints: Dict[str, Dict[str, Any]],
+    target_id: Any,
+    llm: Any,
+    strategic_goals: str,
+    benchmarks: Mapping[LandUse, Dict[str, Any]] | None,
+    target_id_column: str,
+    algorithm,
+    n_gen: int,
+    seed: int,
+    save_history: bool,
+    verbose: bool,
+    scorer_max_retries: int,
+):
+    scorer = StrategicAlignmentScorer(
+        llm=llm,
+        strategic_goals=strategic_goals,
+        max_retries=scorer_max_retries,
+    )
+    problem = DistrictProblem(
+        blocks=blocks,
+        model=model,
+        estimator_kwargs=estimator_kwargs,
+        constraints=constraints,
+        target_id=target_id,
+        benchmarks=benchmarks,
+        target_id_column=target_id_column,
+        strategic_alignment_scorer=scorer,
+    )
+    result = minimize(
+        problem,
+        algorithm(problem),
+        ("n_gen", int(n_gen)),
+        seed=int(seed),
+        verbose=bool(verbose),
+        save_history=bool(save_history),
+    )
+    return result, problem
+
+
 def run_nsga3_with_strategic_alignment(
     *,
     blocks: GeoDataFrame,
@@ -631,42 +675,37 @@ def run_nsga3_with_strategic_alignment(
     scorer_max_retries: int = 2,
 ):
     """Run district optimization with a third LLM-based strategic objective via NSGA-III."""
-    scorer = StrategicAlignmentScorer(
-        llm=llm,
-        strategic_goals=strategic_goals,
-        max_retries=scorer_max_retries,
-    )
-    problem = DistrictProblem(
+    def algorithm(problem):
+        directions = ref_dirs
+        if directions is None:
+            directions = build_nsga3_reference_directions(
+                n_obj=problem.n_obj,
+                pop_size=pop_size,
+                n_partitions=ref_dir_partitions,
+            )
+        return NSGA3(
+            ref_dirs=directions,
+            pop_size=max(int(pop_size), len(directions)),
+            eliminate_duplicates=bool(eliminate_duplicates),
+        )
+
+    return _run_with_strategic_alignment(
         blocks=blocks,
         model=model,
         estimator_kwargs=estimator_kwargs,
         constraints=constraints,
         target_id=target_id,
+        llm=llm,
+        strategic_goals=strategic_goals,
         benchmarks=benchmarks,
         target_id_column=target_id_column,
-        strategic_alignment_scorer=scorer,
+        algorithm=algorithm,
+        n_gen=n_gen,
+        seed=seed,
+        save_history=save_history,
+        verbose=verbose,
+        scorer_max_retries=scorer_max_retries,
     )
-    if ref_dirs is None:
-        ref_dirs = build_nsga3_reference_directions(
-            n_obj=problem.n_obj,
-            pop_size=pop_size,
-            n_partitions=ref_dir_partitions,
-        )
-
-    algorithm = NSGA3(
-        ref_dirs=ref_dirs,
-        pop_size=max(int(pop_size), len(ref_dirs)),
-        eliminate_duplicates=bool(eliminate_duplicates),
-    )
-    result = minimize(
-        problem,
-        algorithm,
-        ("n_gen", int(n_gen)),
-        seed=int(seed),
-        verbose=bool(verbose),
-        save_history=bool(save_history),
-    )
-    return result, problem
 
 
 def run_nsga2_with_strategic_alignment(
@@ -689,31 +728,23 @@ def run_nsga2_with_strategic_alignment(
     scorer_max_retries: int = 2,
 ):
     """Run district optimization with the same LLM-based third objective via NSGA-II."""
-    scorer = StrategicAlignmentScorer(
-        llm=llm,
-        strategic_goals=strategic_goals,
-        max_retries=scorer_max_retries,
-    )
-    problem = DistrictProblem(
+    return _run_with_strategic_alignment(
         blocks=blocks,
         model=model,
         estimator_kwargs=estimator_kwargs,
         constraints=constraints,
         target_id=target_id,
+        llm=llm,
+        strategic_goals=strategic_goals,
         benchmarks=benchmarks,
         target_id_column=target_id_column,
-        strategic_alignment_scorer=scorer,
+        algorithm=lambda _: NSGA2(
+            pop_size=int(pop_size),
+            eliminate_duplicates=bool(eliminate_duplicates),
+        ),
+        n_gen=n_gen,
+        seed=seed,
+        save_history=save_history,
+        verbose=verbose,
+        scorer_max_retries=scorer_max_retries,
     )
-    algorithm = NSGA2(
-        pop_size=int(pop_size),
-        eliminate_duplicates=bool(eliminate_duplicates),
-    )
-    result = minimize(
-        problem,
-        algorithm,
-        ("n_gen", int(n_gen)),
-        seed=int(seed),
-        verbose=bool(verbose),
-        save_history=bool(save_history),
-    )
-    return result, problem

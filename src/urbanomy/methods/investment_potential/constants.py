@@ -1,8 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from types import MappingProxyType
-from typing import Final, Mapping
+from typing import Final
 
 from blocksnet.enums import LandUse
 
@@ -12,16 +11,8 @@ class LandUseConfig:
     """Immutable container for land-use related parameters."""
 
     potential_column: str
-    indicator_weights: Mapping[str, float] = field(default_factory=dict)
+    indicator_weights: dict[str, float] = field(default_factory=dict)
     investment_weights: tuple[float, float] = (0.0, 0.0)
-
-    def __post_init__(self) -> None:
-        # Ensure indicator weights stay read-only after construction.
-        object.__setattr__(
-            self,
-            "indicator_weights",
-            MappingProxyType(dict(self.indicator_weights)),
-        )
 
 
 LAND_USE_CONFIGS: Final[dict[LandUse, LandUseConfig]] = {
@@ -108,25 +99,16 @@ LAND_USE_CONFIGS: Final[dict[LandUse, LandUseConfig]] = {
 }
 
 
-def _as_str_keyed_mapping(
-    source: Mapping[LandUse, LandUseConfig],
-) -> dict[str, LandUseConfig]:
-    """Utility to create a dict keyed by enum values."""
-    return {land_use.value: config for land_use, config in source.items()}
-
-
-_CONFIGS_BY_KEY = _as_str_keyed_mapping(LAND_USE_CONFIGS)
-
 LAND_USE_TO_POTENTIAL_COLUMN: Final[dict[str, str]] = {
-    key: config.potential_column for key, config in _CONFIGS_BY_KEY.items()
+    land_use.value: config.potential_column for land_use, config in LAND_USE_CONFIGS.items()
 }
 
 LAND_USE_WEIGHTS: Final[dict[str, dict[str, float]]] = {
-    key: dict(config.indicator_weights) for key, config in _CONFIGS_BY_KEY.items()
+    land_use.value: config.indicator_weights for land_use, config in LAND_USE_CONFIGS.items()
 }
 
 INVESTMENT_WEIGHTS: Final[dict[str, tuple[float, float]]] = {
-    key: config.investment_weights for key, config in _CONFIGS_BY_KEY.items()
+    land_use.value: config.investment_weights for land_use, config in LAND_USE_CONFIGS.items()
 }
 
 DEFAULT_BENCHMARKS_RU: Final[dict[LandUse, dict[str, float | int]]] = {

@@ -1,18 +1,16 @@
-Welcome to MyPackage documentation!
-====================================
+Urbanomy documentation
+======================
 
 .. include:: ../../README.rst
    :start-after: .. logo-start
    :end-before: .. logo-end
 
-Documentation:
+Contents:
 --------------
 
 .. toctree::
    :maxdepth: 1
 
-   guide/index
-   examples/index
    api/index
 
 .. include:: ../../README.rst

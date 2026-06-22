@@ -893,91 +893,6 @@ class ParetoMultiAgentOrchestrator:
     run = invoke
 
 
-def build_pareto_front_dataframe(
-    *,
-    res: Any,
-    problem: Any,
-    baseline_land_value: float | None = None,
-    use_history: bool = False,
-    scenario_prefix: str = "scenario",
-) -> pd.DataFrame:
-    """Build a voting-ready Pareto-front DataFrame from optimizer outputs.
-
-    The resulting table always contains:
-    - ``scenario_id``
-    - ``title``
-    - ``summary``
-    - ``land_use``
-    - ``land_value_after``
-    - ``land_value_gain``
-    - ``investor_npv``
-    - ``params_repaired``
-    """
-    if baseline_land_value is None:
-        baseline_land_value = float(
-            problem.evaluate_catboost(
-                geonome=problem.blocks,
-                model=problem.model,
-                orig_features=problem.estimator_kwargs["orig_features"],
-                cat_features=problem.estimator_kwargs["categorical_features"],
-                radius_list=None,
-            )
-        )
-
-    X_all: list[Any] = []
-    F_all: list[Any] = []
-    if use_history and getattr(res, "history", None):
-        for alg in res.history:
-            pop = alg.pop
-            Xi, Fi = pop.get("X"), pop.get("F")
-            if Xi is not None and Fi is not None and len(Xi):
-                X_all.extend(list(Xi))
-                F_all.extend(list(Fi))
-
-    if X_all and F_all:
-        X = X_all
-        F = F_all
-    else:
-        X = list(res.X)
-        F = list(res.F)
-
-    rows: list[dict[str, Any]] = []
-    for index, (x_row, f_row) in enumerate(zip(X, F)):
-        params_optimal = {
-            param: x_row[i]
-            for i, param in enumerate(problem.constraints.keys())
-        }
-        params_repaired = problem._repair_genome(dict(params_optimal))
-        scenario_id = f"{scenario_prefix}_{index}"
-        land_use_value = params_repaired.get("land_use")
-        land_use_name = getattr(land_use_value, "name", str(land_use_value).split(".")[-1])
-        land_value_after = float(-f_row[0])
-        land_value_gain = float(land_value_after - baseline_land_value)
-        investor_npv = float(-f_row[1])
-        title = f"{scenario_id} | {land_use_name}"
-        summary = _scenario_summary_from_row(
-            scenario_id=scenario_id,
-            title=title,
-            land_use=land_use_name,
-            land_value_gain=land_value_gain,
-            investor_npv=investor_npv,
-        )
-        rows.append(
-            {
-                "scenario_id": scenario_id,
-                "title": title,
-                "summary": summary,
-                "land_use": land_use_name,
-                "land_value_after": land_value_after,
-                "land_value_gain": land_value_gain,
-                "investor_npv": investor_npv,
-                "params_repaired": _json_ready(params_repaired),
-            }
-        )
-
-    return pd.DataFrame(rows)
-
-
 def run_pareto_vote(
     frontier: pd.DataFrame | Sequence[Mapping[str, Any]] | Sequence[ParetoScenario],
     *,
@@ -1093,7 +1008,6 @@ __all__ = [
     "WinnerScenarioQAResult",
     "ParetoMultiAgentOrchestrator",
     "ask_winner_scenario_question",
-    "build_pareto_front_dataframe",
     "collect_pareto_scenarios",
     "run_pareto_vote",
     "select_best_pareto_scenario",

@@ -1,6 +1,7 @@
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
+.DS_Store
 
 # C extensions
 *.so
@@ -18,6 +19,7 @@ htmlcov/
 .coverage
 .cache
 .pytest_cache/
+.agents/
 
 # Django stuff
 *.log

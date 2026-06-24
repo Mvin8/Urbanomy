@@ -37,6 +37,8 @@ examples/parsed_parts_ter
 *.geojson
 *.graphml
 *.csv
+*.jsonl
+*.gif
 
 # Flask stuff
 instance/

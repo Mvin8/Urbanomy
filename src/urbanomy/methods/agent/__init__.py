@@ -1,24 +1,19 @@
-"""Public exports for the agent helpers used in notebooks."""
+from .config import config
 
-from importlib import import_module
-
-__all__ = [
-    "Agent",
-    "llm",
-    "embedding",
-    "get_id",
-    "tools",
-]
+__all__ = ["Agent", "SingleAgentBaseline", "build_single_agent_graph", "config", "init_llm", "llm", "embedding"]
 
 
 def __getattr__(name: str):
     if name == "Agent":
-        return import_module(".agent", __name__).Agent
-    if name in {"llm", "embedding"}:
-        module = import_module(".llms", __name__)
-        return getattr(module, name)
-    if name == "get_id":
-        return import_module(".utils", __name__).get_id
-    if name == "tools":
-        return import_module(".tools", __name__)
+        from .agent import Agent
+
+        return Agent
+    if name in {"init_llm", "llm", "embedding"}:
+        from . import llms
+
+        return getattr(llms, name)
+    if name in {"SingleAgentBaseline", "build_single_agent_graph"}:
+        from . import single_agent
+
+        return getattr(single_agent, name)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

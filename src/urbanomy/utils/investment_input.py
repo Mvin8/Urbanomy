@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
-from typing import Iterable, Mapping, Sequence
+from typing import Mapping, Sequence
 
 import geopandas as gpd
 import pandas as pd
-from loguru import logger
+logger = logging.getLogger(__name__)
 
 INVESTMENT_NUMERIC_COLUMNS: tuple[str, ...] = (
     "land_value",
@@ -197,14 +198,9 @@ def _convert_land_use_shares_to_area(
 
 def prepare_investment_input(
     gdf: gpd.GeoDataFrame,
-    project_potential: gpd.GeoDataFrame | pd.DataFrame | None = None,
     *,
-    keep_columns: Sequence[str] | None = None,
-    allowed_uses: Iterable[str] | None = None,
     land_use_column: str = "land_use",
-    ip_type_column: str = "ip_type",
     scenario_flag_column: str = "is_project",
-    land_use_prefix_pattern: str = r"^LandUse\.",
     show_warning: bool = True,
 ) -> pd.DataFrame:
     """Prepare scenario data for investment-metrics calculation.
@@ -213,20 +209,10 @@ def prepare_investment_input(
     ----------
     gdf : geopandas.GeoDataFrame
         Scenario dataset to be normalised and validated.
-    project_potential : geopandas.GeoDataFrame or pandas.DataFrame or None, optional
-        Deprecated and ignored. Kept only for backward compatibility.
-    keep_columns : Sequence[str] or None, optional
-        Columns to preserve when filtering scenario polygons.
-    allowed_uses : Iterable[str] or None, optional
-        Land-use codes allowed when computing baseline lookups.
     land_use_column : str, optional
         Column containing land-use codes (default ``"land_use"``).
-    ip_type_column : str, optional
-        Column name used for the derived IP type (default ``"ip_type"``).
     scenario_flag_column : str, optional
         Column indicating scenario membership (default ``"is_project"``).
-    land_use_prefix_pattern : str, optional
-        Regex pattern removed from land-use codes (default ``r"^LandUse\."``).
     show_warning : bool, optional
         Whether to emit warning logs during preparation (default ``True``).
 
@@ -238,17 +224,12 @@ def prepare_investment_input(
     """
 
     polygon_gdf = _ensure_geodataframe(gdf)
-    _ = (keep_columns, allowed_uses, ip_type_column, land_use_prefix_pattern)
-    if project_potential is not None and show_warning:
-        logger.warning(
-            "prepare_investment_input: параметр 'project_potential' больше не используется и игнорируется."
-        )
     if scenario_flag_column in polygon_gdf.columns:
         scenario_mask = polygon_gdf[scenario_flag_column].fillna(False).astype(bool)
         polygon_gdf = polygon_gdf.loc[scenario_mask].reset_index(drop=True)
     elif show_warning:
         logger.warning(
-            "prepare_investment_input: колонка '{}' не найдена; возвращаем все кварталы.",
+            "prepare_investment_input: колонка %r не найдена; возвращаем все кварталы.",
             scenario_flag_column,
         )
 

@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import math
+import logging
 from dataclasses import dataclass
 from typing import Any, Mapping, Sequence, overload
 
 import geopandas as gpd
 import numpy as np
 import pandas as pd
-from loguru import logger
 
 from blocksnet.enums import LandUse
 
@@ -33,6 +33,8 @@ from .utils_metrics import (
     payback_period,
     quantize,
 )
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -688,7 +690,7 @@ class InvestmentAttractivenessAnalyzer:
         if missing_count and show_warning:
             total = int(len(working))
             logger.warning(
-                "calculate_investment_metrics: {} из {} кварталов без land-use; "
+                "calculate_investment_metrics: %s из %s кварталов без land-use; "
                 "пропускаем их в расчётах, но оставляем в итоговом отчёте.",
                 missing_count,
                 total,

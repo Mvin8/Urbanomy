@@ -6,6 +6,7 @@ import json
 import math
 import re
 import copy
+from pathlib import Path
 from typing import Any, Dict, Mapping, Sequence
 
 import geopandas as gpd
@@ -101,32 +102,24 @@ def _strip_code_fences(text: str) -> str:
 
 
 class StrategicAlignmentScorer:
-    """Score scenarios against strategic development goals with an LLM."""
+    """Score scenarios with an LLM or baseline."""
 
     def __init__(
         self,
         *,
-        llm: Any,
-        strategic_goals: str | dict[str, str],
+        llm: Any | None = None,
+        baseline: Any | None = None,
+        prompt: str,
         max_retries: int = 2,
     ) -> None:
-        if isinstance(strategic_goals, dict):
-            # Multiple prompts mode
-            if not strategic_goals:
-                raise ValueError("strategic_goals dict must not be empty.")
-            self.strategic_goals = {k: str(v).strip() for k, v in strategic_goals.items()}
-            if any(not v for v in self.strategic_goals.values()):
-                raise ValueError("All strategic_goals values must be non-empty strings.")
-            self.is_multi_prompt = True
-        else:
-            # Single prompt mode (backward compatible)
-            goals = str(strategic_goals).strip()
-            if not goals:
-                raise ValueError("strategic_goals must be a non-empty string.")
-            self.strategic_goals = goals
-            self.is_multi_prompt = False
-        
+        prompt_text = str(prompt).strip()
+        if not prompt_text:
+            raise ValueError("prompt must be a non-empty string.")
+        if llm is None and baseline is None:
+            raise ValueError("Either llm or baseline must be provided.")
         self.llm = llm
+        self.baseline = baseline
+        self.prompt = prompt_text
         self.max_retries = max(0, int(max_retries))
         self._cache: dict[str, dict[str, Any]] = {}
         self.prompt_history: list[dict[str, Any]] = []
@@ -136,37 +129,26 @@ class StrategicAlignmentScorer:
         copied = self.__class__.__new__(self.__class__)
         memo[id(self)] = copied
         copied.llm = self.llm
-        copied.strategic_goals = self.strategic_goals
-        copied.is_multi_prompt = self.is_multi_prompt
-        copied.prompt_history = copy.deepcopy(self.prompt_history, memo)
+        copied.baseline = self.baseline
+        copied.prompt = self.prompt
         copied.max_retries = self.max_retries
         copied._cache = copy.deepcopy(self._cache, memo)
         return copied
 
-    def _build_prompt(self, *, candidate_payload: Mapping[str, Any], prompt_key: str | None = None) -> str:
-        if self.is_multi_prompt:
-            if prompt_key is None:
-                raise ValueError("prompt_key is required for multi-prompt mode")
-            goals = self.strategic_goals.get(prompt_key, "")
-            if not goals:
-                raise ValueError(f"No strategic goals found for prompt_key: {prompt_key}")
-        else:
-            goals = self.strategic_goals
-        
+    def _invoke(self, prompt: str) -> str:
+        if self.baseline is not None:
+            if hasattr(self.baseline, "invoke_state"):
+                return str(self.baseline.invoke_state(prompt).get("output", ""))
+            response = self.baseline.invoke(prompt)
+            return _message_to_text(response)
+        response = self.llm.invoke(prompt)
+        return _message_to_text(response)
+
+    def _build_prompt(self, *, candidate_payload: Mapping[str, Any]) -> str:
         return (
-            "Ты градостроительный эксперт. Оцени, насколько сценарий соответствует целям "
-            "социально-экономического развития.\n"
-            "Верни только JSON без markdown в формате:\n"
-            '{"score": 0.0, "reasoning": "краткое объяснение на русском"}\n\n'
-            "Правила:\n"
-            "- 0.0 означает, что сценарий противоречит целям.\n"
-            "- 0.5 означает частичное соответствие.\n"
-            "- 1.0 означает максимально сильное соответствие.\n"
-            "- Используй только данные из сценария.\n"
-            "- В reasoning укажи 1-3 причины оценки.\n\n"
-            f"Цели СЭР:\n{goals}\n\n"
+            f"{self.prompt}\n\n"
             "Сценарий:\n"
-            f"{json.dumps(_json_ready(candidate_payload), ensure_ascii=False, indent=2)}"
+            f"{json.dumps(_json_ready(candidate_payload), ensure_ascii=False, separators=(',', ':'))}"
         )
 
     def _repair_prompt(self, *, raw_text: str, error_text: str) -> str:
@@ -218,100 +200,38 @@ class StrategicAlignmentScorer:
     def score_candidate(
         self,
         *,
-        target_id: Any,
-        site_area: float,
         params_repaired: Mapping[str, Any],
-        land_value_after: float,
+        land_value_gain: float,
         investor_npv: float,
     ) -> dict[str, Any]:
-        """
-        Score a candidate scenario. Returns single or multiple scores depending on mode.
-        
-        In single-prompt mode: returns {"score": float, "reasoning": str, ...}
-        In multi-prompt mode: returns {"scores": {prompt_key: float}, "reasonings": {prompt_key: str}, ...}
-        """
-        land_use_value = params_repaired.get("land_use")
-        land_use_name = getattr(land_use_value, "name", str(land_use_value).split(".")[-1])
         candidate_payload = {
-            "target_id": target_id,
-            "site_area": float(site_area),
-            "land_use": land_use_name,
-            "land_value_after": float(land_value_after),
-            "investor_npv": float(investor_npv),
             "params_repaired": _json_ready(params_repaired),
+            "land_value_gain": float(land_value_gain),
+            "investor_npv": float(investor_npv),
         }
         cache_key = json.dumps(candidate_payload, ensure_ascii=False, sort_keys=True)
         cached = self._cache.get(cache_key)
         if cached is not None:
             return cached
 
-        if self.is_multi_prompt:
-            # Multi-prompt mode: score against each prompt key
-            scores = {}
-            reasonings = {}
-            for prompt_key in self.strategic_goals.keys():
-                prompt = self._build_prompt(candidate_payload=candidate_payload, prompt_key=prompt_key)
-                self.prompt_history.append(
-                    {
-                        "prompt_key": prompt_key,
-                        "prompt": prompt,
-                        "candidate_payload": candidate_payload,
-                    }
-                )
-                response = self.llm.invoke(prompt)
-                raw_text = _message_to_text(response)
-                last_error: Exception | None = None
-                
-                for attempt in range(self.max_retries + 1):
-                    try:
-                        score, reasoning = self._parse_response(raw_text)
-                        scores[prompt_key] = float(score)
-                        reasonings[prompt_key] = reasoning
-                        break
-                    except Exception as exc:
-                        last_error = exc
-                        if attempt >= self.max_retries:
-                            raise ValueError(f"Unable to score prompt '{prompt_key}': {last_error}") from last_error
-                        repair = self.llm.invoke(self._repair_prompt(raw_text=raw_text, error_text=str(exc)))
-                        raw_text = _message_to_text(repair)
-            
-            result = {
-                "scores": scores,
-                "reasonings": reasonings,
-                "candidate_payload": candidate_payload,
-            }
-            self._cache[cache_key] = result
-            return result
-        else:
-            # Single-prompt mode (backward compatible)
-            prompt = self._build_prompt(candidate_payload=candidate_payload)
-            self.prompt_history.append(
-                {
-                    "prompt_key": None,
-                    "prompt": prompt,
+        prompt = self._build_prompt(candidate_payload=candidate_payload)
+        raw_text = self._invoke(prompt)
+        last_error: Exception | None = None
+        for attempt in range(self.max_retries + 1):
+            try:
+                score, reasoning = self._parse_response(raw_text)
+                result = {
+                    "score": float(score),
+                    "reasoning": reasoning,
                     "candidate_payload": candidate_payload,
                 }
-            )
-            response = self.llm.invoke(prompt)
-            raw_text = _message_to_text(response)
-            last_error: Exception | None = None
-            
-            for attempt in range(self.max_retries + 1):
-                try:
-                    score, reasoning = self._parse_response(raw_text)
-                    result = {
-                        "score": float(score),
-                        "reasoning": reasoning,
-                        "candidate_payload": candidate_payload,
-                    }
-                    self._cache[cache_key] = result
-                    return result
-                except Exception as exc:
-                    last_error = exc
-                    if attempt >= self.max_retries:
-                        break
-                    repair = self.llm.invoke(self._repair_prompt(raw_text=raw_text, error_text=str(exc)))
-                    raw_text = _message_to_text(repair)
+                self._cache[cache_key] = result
+                return result
+            except Exception as exc:
+                last_error = exc
+                if attempt >= self.max_retries:
+                    break
+                raw_text = self._invoke(self._repair_prompt(raw_text=raw_text, error_text=str(exc)))
 
             raise ValueError(f"Unable to obtain a valid strategic alignment score from LLM: {last_error}") from last_error
 
@@ -345,6 +265,7 @@ class DistrictProblem(Problem):
         benchmarks: Mapping[LandUse, Dict[str, Any]] | None = None,
         target_id_column: str = BlockColumn.ID.value,
         strategic_alignment_scorer: StrategicAlignmentScorer | None = None,
+        log_optimization: bool = False,
     ):
         self.blocks = blocks
         self.model = model
@@ -354,39 +275,16 @@ class DistrictProblem(Problem):
         self.target_id = target_id
         self.target_id_column = target_id_column
         self.strategic_alignment_scorer = strategic_alignment_scorer
-        self.objective_names = [
-
-            "land_value_total",
-
-            "investor_npv",
-
-        ]
-
-        if strategic_alignment_scorer is not None:
-
-            if strategic_alignment_scorer.is_multi_prompt:
-
-                self.objective_names.extend(
-
-                    [
-
-                        f"ser_alignment_{key}"
-
-                        for key in strategic_alignment_scorer.strategic_goals.keys()
-
-                    ]
-
-                )
-
-            else:
-
-                self.objective_names.append(
-
-                    "ser_alignment_score"
-
-                )
+        self.log_optimization = bool(log_optimization)
+        self.optimization_log: list[dict[str, Any]] = []
+        self.objective_names = (
+            ["land_value_total", "investor_npv", "llm score"]
+            if strategic_alignment_scorer is not None
+            else ["land_value_total", "investor_npv"]
+        )
         self.var_names = list(constraints.keys())
         self._strategic_alignment_results: dict[str, dict[str, Any]] = {}
+        self._baseline_land_value: float | None = None
         land_use_vars = [
             "residential",
             "business",
@@ -450,9 +348,8 @@ class DistrictProblem(Problem):
         investor_npv: float,
     ) -> str:
         payload = {
-            "target_id": self.target_id,
             "params_repaired": _json_ready(params_repaired),
-            "land_value_after": round(float(land_value_after), 6),
+            "land_value_gain": round(float(land_value_after - self.baseline_land_value()), 6),
             "investor_npv": round(float(investor_npv), 6),
         }
         return json.dumps(payload, ensure_ascii=False, sort_keys=True)
@@ -548,6 +445,19 @@ class DistrictProblem(Problem):
         estimated = estimator.predict()
         return estimated["land_value"].sum()
 
+    def baseline_land_value(self) -> float:
+        if self._baseline_land_value is None:
+            self._baseline_land_value = float(
+                self.evaluate_catboost(
+                    geonome=self.blocks,
+                    model=self.model,
+                    orig_features=self.estimator_kwargs["orig_features"],
+                    cat_features=self.estimator_kwargs["categorical_features"],
+                    radius_list=None,
+                )
+            )
+        return self._baseline_land_value
+
     def _mark_project_block(self, geonome: GeoDataFrame) -> GeoDataFrame:
         """Mark the target block as project using the passed target index."""
         marked = geonome.copy()
@@ -599,13 +509,9 @@ class DistrictProblem(Problem):
         if cached is not None:
             return cached
 
-        target_label = self._resolve_target_label()
-        site_area = float(self.blocks.loc[target_label, "site_area"])
         scored = self.strategic_alignment_scorer.score_candidate(
-            target_id=self.target_id,
-            site_area=site_area,
             params_repaired=params_repaired,
-            land_value_after=land_value_after,
+            land_value_gain=land_value_after - self.baseline_land_value(),
             investor_npv=investor_npv,
         )
         self._strategic_alignment_results[key] = scored
@@ -669,7 +575,7 @@ class DistrictProblem(Problem):
             # maximize -> minimize
             F[i, 0] = -land_value
             F[i, 1] = -investment_potential
-
+            alignment = None
             if self.strategic_alignment_scorer is not None:
 
                 alignment = self.evaluate_strategic_alignment(
@@ -677,31 +583,26 @@ class DistrictProblem(Problem):
                     land_value_after=land_value,
                     investor_npv=investment_potential,
                 )
-
-                if alignment is not None:
-
-                    # MULTI PROMPT
-                    if self.strategic_alignment_scorer.is_multi_prompt:
-
-                        scores_dict = alignment.get("scores", {})
-
-                        for j, prompt_key in enumerate(
-                            self.strategic_alignment_scorer.strategic_goals.keys(),
-                            start=2,
-                        ):
-
-                            score = float(
-                                scores_dict.get(prompt_key, 0.0)
-                            )
-
-                            F[i, j] = -score
-
-                    # SINGLE PROMPT
-                    else:
-
-                        F[i, 2] = -float(
-                            alignment["score"]
-                        )
+                F[i, 2] = -float(alignment["score"]) if alignment is not None else 0.0
+            if self.log_optimization:
+                self.optimization_log.append(
+                    {
+                        "eval_id": len(self.optimization_log),
+                        "target_id": _json_ready(self.target_id),
+                        "params_repaired": _json_ready(changes),
+                        "land_value_total": float(land_value),
+                        "land_value_gain": float(land_value - self.baseline_land_value()),
+                        "investor_npv": float(investment_potential),
+                        "llm score": (
+                            float(alignment["score"]) if alignment is not None else None
+                        ),
+                        "ser_alignment_reasoning": (
+                            str(alignment.get("reasoning", "")).strip()
+                            if alignment is not None
+                            else None
+                        ),
+                    }
+                )
 
         out["F"] = F
 
@@ -746,8 +647,69 @@ class NSGA2GenerationStatsCallback(Callback):
             )
 
         print(
-            f"[gen {gen:03d}] " + " | ".join(stats_parts)
+            "[gen {gen:03d}] "
+            "land_value min/med/max={land_min:,.0f}/{land_median:,.0f}/{land_max:,.0f} | "
+            "NPV min/med/max={npv_min:,.0f}/{npv_median:,.0f}/{npv_max:,.0f}".format(**stats)
+            + ser_text
         )
+
+
+def _run_with_strategic_alignment(
+    *,
+    blocks: GeoDataFrame,
+    model: CatBoostRegressor,
+    estimator_kwargs: Dict[str, Any],
+    constraints: Dict[str, Dict[str, Any]],
+    target_id: Any,
+    llm: Any | None,
+    baseline: Any | None,
+    prompt: str,
+    benchmarks: Mapping[LandUse, Dict[str, Any]] | None,
+    target_id_column: str,
+    algorithm,
+    n_gen: int,
+    seed: int,
+    save_history: bool,
+    verbose: bool,
+    scorer_max_retries: int,
+    log_optimization: bool,
+    optimization_log_path: str | Path | None,
+):
+    scorer = StrategicAlignmentScorer(
+        llm=llm,
+        baseline=baseline,
+        prompt=prompt,
+        max_retries=scorer_max_retries,
+    )
+    problem = DistrictProblem(
+        blocks=blocks,
+        model=model,
+        estimator_kwargs=estimator_kwargs,
+        constraints=constraints,
+        target_id=target_id,
+        benchmarks=benchmarks,
+        target_id_column=target_id_column,
+        strategic_alignment_scorer=scorer,
+        log_optimization=bool(log_optimization or optimization_log_path),
+    )
+    result = minimize(
+        problem,
+        algorithm(problem),
+        ("n_gen", int(n_gen)),
+        seed=int(seed),
+        verbose=bool(verbose),
+        save_history=bool(save_history),
+    )
+    if optimization_log_path:
+        path = Path(optimization_log_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        pd.DataFrame(problem.optimization_log).to_json(
+            path,
+            orient="records",
+            lines=True,
+            force_ascii=False,
+        )
+    return result, problem
 
 
 def run_nsga3_with_strategic_alignment(
@@ -757,8 +719,9 @@ def run_nsga3_with_strategic_alignment(
     estimator_kwargs: Dict[str, Any],
     constraints: Dict[str, Dict[str, Any]],
     target_id: Any,
-    llm: Any,
-    strategic_goals: str | dict[str, str],
+    prompt: str,
+    llm: Any | None = None,
+    baseline: Any | None = None,
     benchmarks: Mapping[LandUse, Dict[str, Any]] | None = None,
     target_id_column: str = BlockColumn.ID.value,
     pop_size: int = 20,
@@ -770,97 +733,44 @@ def run_nsga3_with_strategic_alignment(
     ref_dirs: np.ndarray | None = None,
     ref_dir_partitions: int | None = None,
     scorer_max_retries: int = 2,
-    return_pareto_prompt_history: bool = False,
+    log_optimization: bool = False,
+    optimization_log_path: str | Path | None = None,
 ):
-    """Run district optimization with a third LLM-based strategic objective via NSGA-III.
+    """Run district optimization with a third LLM-based strategic objective via NSGA-III."""
+    def algorithm(problem):
+        directions = ref_dirs
+        if directions is None:
+            directions = build_nsga3_reference_directions(
+                n_obj=problem.n_obj,
+                pop_size=pop_size,
+                n_partitions=ref_dir_partitions,
+            )
+        return NSGA3(
+            ref_dirs=directions,
+            pop_size=max(int(pop_size), len(directions)),
+            eliminate_duplicates=bool(eliminate_duplicates),
+        )
 
-    Returns:
-        tuple: (result, problem, prompt_history) - optimization result, problem instance,
-            and the prompts that were sent to the LLM for scoring.
-            If return_pareto_prompt_history=True, prompt_history is filtered to
-            entries corresponding only to solutions on the Pareto front.
-    """
-    scorer = StrategicAlignmentScorer(
-        llm=llm,
-        strategic_goals=strategic_goals,
-        max_retries=scorer_max_retries,
-    )
-    problem = DistrictProblem(
+    return _run_with_strategic_alignment(
         blocks=blocks,
         model=model,
         estimator_kwargs=estimator_kwargs,
         constraints=constraints,
         target_id=target_id,
+        llm=llm,
+        baseline=baseline,
+        prompt=prompt,
         benchmarks=benchmarks,
         target_id_column=target_id_column,
-        strategic_alignment_scorer=scorer,
+        algorithm=algorithm,
+        n_gen=n_gen,
+        seed=seed,
+        save_history=save_history,
+        verbose=verbose,
+        scorer_max_retries=scorer_max_retries,
+        log_optimization=log_optimization,
+        optimization_log_path=optimization_log_path,
     )
-    if ref_dirs is None:
-        ref_dirs = build_nsga3_reference_directions(
-            n_obj=problem.n_obj,
-            pop_size=pop_size,
-            n_partitions=ref_dir_partitions,
-        )
-
-    algorithm = NSGA3(
-        ref_dirs=ref_dirs,
-        pop_size=max(int(pop_size), len(ref_dirs)),
-        eliminate_duplicates=bool(eliminate_duplicates),
-    )
-    result = minimize(
-        problem,
-        algorithm,
-        ("n_gen", int(n_gen)),
-        seed=int(seed),
-        verbose=bool(verbose),
-        save_history=bool(save_history),
-    )
-    prompt_history = scorer.prompt_history
-    if return_pareto_prompt_history:
-        prompt_history = get_pareto_prompt_history(problem, result)
-    return result, problem, prompt_history
-
-
-def get_pareto_prompt_history(
-    problem: DistrictProblem,
-    result: Any,
-    unique: bool = True,
-) -> list[dict[str, Any]]:
-    """Select prompt history entries corresponding only to Pareto-front solutions."""
-    if not hasattr(result, "X") or result.X is None:
-        return []
-    if problem.strategic_alignment_scorer is None:
-        return []
-
-    payload_keys: set[str] = set()
-    for x in np.atleast_2d(result.X):
-        genome = {name: float(x[j]) for j, name in enumerate(problem.var_names)}
-        repaired = problem._repair_genome(genome)
-        params_key = json.dumps(
-            _json_ready(repaired),
-            ensure_ascii=False,
-            sort_keys=True,
-        )
-        payload_keys.add(params_key)
-
-    history: list[dict[str, Any]] = []
-    seen: set[str] = set()
-    for entry in problem.strategic_alignment_scorer.prompt_history:
-        candidate_payload = entry.get("candidate_payload", {})
-        params_repaired = candidate_payload.get("params_repaired")
-        if params_repaired is None:
-            continue
-        key = json.dumps(
-            params_repaired,
-            ensure_ascii=False,
-            sort_keys=True,
-        )
-        if key in payload_keys:
-            if unique and key in seen:
-                continue
-            seen.add(key)
-            history.append(entry)
-    return history
 
 
 def run_nsga2_with_strategic_alignment(
@@ -870,8 +780,9 @@ def run_nsga2_with_strategic_alignment(
     estimator_kwargs: Dict[str, Any],
     constraints: Dict[str, Dict[str, Any]],
     target_id: Any,
-    llm: Any,
-    strategic_goals: str|dict[str, str],
+    prompt: str,
+    llm: Any | None = None,
+    baseline: Any | None = None,
     benchmarks: Mapping[LandUse, Dict[str, Any]] | None = None,
     target_id_column: str = BlockColumn.ID.value,
     pop_size: int = 20,
@@ -881,247 +792,30 @@ def run_nsga2_with_strategic_alignment(
     save_history: bool = True,
     verbose: bool = True,
     scorer_max_retries: int = 2,
+    log_optimization: bool = False,
+    optimization_log_path: str | Path | None = None,
 ):
     """Run district optimization with the same LLM-based third objective via NSGA-II."""
-    scorer = StrategicAlignmentScorer(
+    return _run_with_strategic_alignment(
+        blocks=blocks,
+        model=model,
+        estimator_kwargs=estimator_kwargs,
+        constraints=constraints,
+        target_id=target_id,
         llm=llm,
-        strategic_goals=strategic_goals,
-        max_retries=scorer_max_retries,
-    )
-    problem = DistrictProblem(
-        blocks=blocks,
-        model=model,
-        estimator_kwargs=estimator_kwargs,
-        constraints=constraints,
-        target_id=target_id,
+        baseline=baseline,
+        prompt=prompt,
         benchmarks=benchmarks,
         target_id_column=target_id_column,
-        strategic_alignment_scorer=scorer,
+        algorithm=lambda _: NSGA2(
+            pop_size=int(pop_size),
+            eliminate_duplicates=bool(eliminate_duplicates),
+        ),
+        n_gen=n_gen,
+        seed=seed,
+        save_history=save_history,
+        verbose=verbose,
+        scorer_max_retries=scorer_max_retries,
+        log_optimization=log_optimization,
+        optimization_log_path=optimization_log_path,
     )
-    algorithm = NSGA2(
-        pop_size=int(pop_size),
-        eliminate_duplicates=bool(eliminate_duplicates),
-    )
-    result = minimize(
-        problem,
-        algorithm,
-        ("n_gen", int(n_gen)),
-        seed=int(seed),
-        verbose=bool(verbose),
-        save_history=bool(save_history),
-    )
-    return result, problem
-
-
-def run_nsga2_without_strategic_alignment(
-    *,
-    blocks: GeoDataFrame,
-    model: CatBoostRegressor,
-    estimator_kwargs: Dict[str, Any],
-    constraints: Dict[str, Dict[str, Any]],
-    target_id: Any,
-    benchmarks: Mapping[LandUse, Dict[str, Any]] | None = None,
-    target_id_column: str = BlockColumn.ID.value,
-    pop_size: int = 20,
-    n_gen: int = 20,
-    seed: int = 42,
-    eliminate_duplicates: bool = True,
-    save_history: bool = True,
-    verbose: bool = True,
-):
-    """Run district optimization without strategic alignment objective via NSGA-II."""
-    problem = DistrictProblem(
-        blocks=blocks,
-        model=model,
-        estimator_kwargs=estimator_kwargs,
-        constraints=constraints,
-        target_id=target_id,
-        benchmarks=benchmarks,
-        target_id_column=target_id_column,
-        strategic_alignment_scorer=None,
-    )
-    algorithm = NSGA2(
-        pop_size=int(pop_size),
-        eliminate_duplicates=bool(eliminate_duplicates),
-    )
-    result = minimize(
-        problem,
-        algorithm,
-        ("n_gen", int(n_gen)),
-        seed=int(seed),
-        verbose=bool(verbose),
-        save_history=bool(save_history),
-    )
-    return result, problem
-
-
-def optimize_nsga3_without_llm(
-    problem: Problem,
-    population_size: int = 100,
-    generations: int = 200,
-    n_partitions: int = 12
-) -> tuple:
-    """
-    Perform NSGA-III optimization without using LLM.
-
-    Args:
-        problem (Problem): The optimization problem to solve.
-        population_size (int): The size of the population.
-        generations (int): The number of generations to evolve.
-        n_partitions (int): The number of partitions for reference directions.
-
-    Returns:
-        tuple: (result, problem) - The optimization result and the problem instance.
-    """
-    # Generate reference directions for NSGA-III
-    ref_dirs = build_nsga3_reference_directions(
-        n_obj=problem.n_obj, pop_size=population_size, n_partitions=n_partitions
-    )
-
-    # Initialize the NSGA-III algorithm
-    algorithm = NSGA3(pop_size=population_size, ref_dirs=ref_dirs)
-
-    # Perform the optimization
-    result = minimize(
-        problem,
-        algorithm,
-        termination=("n_gen", generations),
-        seed=42,
-        save_history=True,
-        verbose=True,
-    )
-
-    return result, problem
-
-
-def optimize_moead_without_llm(
-    problem: Problem,
-    population_size: int = 100,
-    generations: int = 200,
-    decomposition: str = "pbi",
-    n_neighbors: int = 20,
-    prob_neighbor_mating: float = 0.7,
-) -> tuple:
-    """
-    Perform MOEA/D optimization without using LLM.
-
-    Args:
-        problem (Problem): The optimization problem to solve.
-        population_size (int): The size of the population.
-        generations (int): The number of generations to evolve.
-        decomposition (str): The decomposition method ('pbi', 'aasf', 'asf', 'tchebicheff').
-        n_neighbors (int): The number of neighbors in the neighborhood.
-        prob_neighbor_mating (float): Probability of selecting from neighbors for mating.
-
-    Returns:
-        tuple: (result, problem) - The optimization result and the problem instance.
-    """
-    # Map decomposition string to class
-    decomposition_map = {
-        "pbi": PBI(),
-        "aasf": AASF(beta=10.0),
-        "asf": ASF(eps=0.01),
-        "tchebicheff": Tchebicheff(),
-    }
-    
-    if decomposition not in decomposition_map:
-        raise ValueError(f"Unknown decomposition method: {decomposition}. Must be one of {list(decomposition_map.keys())}")
-    
-    decomp_obj = decomposition_map[decomposition]
-
-    # Generate reference directions for MOEA/D
-    ref_dirs = build_nsga3_reference_directions(
-        n_obj=problem.n_obj, pop_size=population_size, n_partitions=10
-    )
-
-    # Initialize the MOEA/D algorithm
-    algorithm = MOEAD(
-        ref_dirs=ref_dirs,
-        n_neighbors=n_neighbors,
-        decomposition=decomp_obj,
-        prob_neighbor_mating=prob_neighbor_mating,
-    )
-
-    # Perform the optimization
-    result = minimize(
-        problem,
-        algorithm,
-        termination=("n_gen", generations),
-        seed=42,
-        save_history=True,
-        verbose=True,
-    )
-
-    return result, problem
-
-
-def optimize_moead_with_llm(
-    problem: Problem,
-    strategic_alignment_scorer: StrategicAlignmentScorer,
-    population_size: int = 100,
-    generations: int = 200,
-    decomposition: str = "pbi",
-    n_neighbors: int = 20,
-    prob_neighbor_mating: float = 0.7,
-) -> tuple:
-    """
-    Perform MOEA/D optimization with LLM-based strategic alignment scoring.
-
-    This function optimizes using MOEA/D where objectives include land value,
-    investor NPV, and strategic alignment score computed by an LLM.
-
-    Args:
-        problem (Problem): The optimization problem to solve (should have strategic_alignment_scorer).
-        strategic_alignment_scorer (StrategicAlignmentScorer): The LLM-based scorer for strategic alignment.
-        population_size (int): The size of the population.
-        generations (int): The number of generations to evolve.
-        decomposition (str): The decomposition method ('pbi', 'aasf', 'asf', 'tchebicheff').
-        n_neighbors (int): The number of neighbors in the neighborhood.
-        prob_neighbor_mating (float): Probability of selecting from neighbors for mating.
-
-    Returns:
-        tuple: (result, problem) - The optimization result and the problem instance.
-    """
-    # Attach the scorer to the problem if it's not already there
-    if not hasattr(problem, 'strategic_alignment_scorer') or problem.strategic_alignment_scorer is None:
-        problem.strategic_alignment_scorer = strategic_alignment_scorer
-        problem.objective_names = ["land_value_total", "investor_npv", "ser_alignment_score"]
-        problem.n_obj = 3
-
-    # Map decomposition string to class
-    decomposition_map = {
-        "pbi": PBI(),
-        "aasf": AASF(beta=10.0),
-        "asf": ASF(eps=0.01),
-        "tchebicheff": Tchebicheff(),
-    }
-    
-    if decomposition not in decomposition_map:
-        raise ValueError(f"Unknown decomposition method: {decomposition}. Must be one of {list(decomposition_map.keys())}")
-    
-    decomp_obj = decomposition_map[decomposition]
-
-    # Generate reference directions for MOEA/D
-    ref_dirs = build_nsga3_reference_directions(
-        n_obj=problem.n_obj, pop_size=population_size, n_partitions=10
-    )
-
-    # Initialize the MOEA/D algorithm
-    algorithm = MOEAD(
-        ref_dirs=ref_dirs,
-        n_neighbors=n_neighbors,
-        decomposition=decomp_obj,
-        prob_neighbor_mating=prob_neighbor_mating,
-    )
-
-    # Perform the optimization
-    result = minimize(
-        problem,
-        algorithm,
-        termination=("n_gen", generations),
-        seed=42,
-        save_history=True,
-        verbose=True,
-    )
-
-    return result, problem
